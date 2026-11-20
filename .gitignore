@@ -4,10 +4,19 @@ target/
 # Python
 __pycache__/
 *.pyc
+*.pyd
+*.so
 .pytest_cache/
+.venv/
+venv/
+
+# Playwright & Test Artifacts
+playwright-report/
+test-results/
 
 # DuckLake Data Files
 duckdb_temp/
+duckdb_temp_*/
 lmsys_temp/
 scratch_lindel/
 archive/

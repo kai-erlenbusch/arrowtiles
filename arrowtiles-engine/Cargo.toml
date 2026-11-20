@@ -14,15 +14,11 @@ pyo3 = { version = "0.23.0", features = ["extension-module", "abi3-py39"] }
 pyo3-log = "*"
 fast_hilbert = "2.1.0"
 dashmap = "5.5.3"
-lazy_static = "1.4.0"
 parquet = "58.0.0"
 pmtiles = { version = "0.23.0", features = ["write", "zstd"] }
-ahash = "0.8.11"
 serde_json = "1.0"
 base64 = "0.22"
 rayon = "1.10"
-glob = "0.3.1"
 log = "0.4"
-bitvec = "1.1.1"
 anyhow = "1.0.103"
-
+zstd = "0.13"

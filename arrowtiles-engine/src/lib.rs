@@ -1,86 +1,41 @@
 use std::collections::HashMap;
-use std::env;
 use std::fs::File;
 use std::io::BufWriter;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use arrow::array::{
-    Array, Float32Array, RecordBatch, RecordBatchReader, UInt16Builder, UInt64Array, UInt64Builder, UInt8Builder,
+    Array, Float64Array, RecordBatch, RecordBatchReader, UInt16Builder, UInt64Array, UInt64Builder, UInt8Builder,
 };
-use arrow::compute::{cast, filter, take};
+use arrow::compute::{cast, take};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
+use dashmap::DashMap;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
-use pmtiles::{Compression, PmTilesWriter, TileType};
+use pmtiles::{Compression, Compressor, PmTilesWriter, TileType};
 use rayon::prelude::*;
 use serde_json::json;
 
 use pyo3::prelude::*;
-use pyo3::exceptions::{PyValueError, PyRuntimeError, PyIOError};
+use pyo3::exceptions::PyRuntimeError;
 use anyhow::Result;
 
-// Custom 2GB Bloom Filter for 1.8 Billion rows
-struct BloomFilter {
-    bits: Vec<u64>,
-    mask: usize,
-}
-
-impl BloomFilter {
-    fn new(capacity_bits: usize) -> Self {
-        let mut power_of_two = 1;
-        while power_of_two < capacity_bits {
-            power_of_two <<= 1;
-        }
-        Self {
-            bits: vec![0; power_of_two / 64],
-            mask: power_of_two - 1,
-        }
+fn take_ffi_stream(stream_ptr: usize) -> Result<arrow::ffi_stream::ArrowArrayStreamReader> {
+    if stream_ptr == 0 {
+        anyhow::bail!("Null FFI_ArrowArrayStream pointer passed across FFI boundary");
     }
-    
-    #[inline(always)]
-    fn insert(&mut self, hash1: u64, hash2: u64, hash3: u64) {
-        let i1 = (hash1 as usize) & self.mask;
-        self.bits[i1 >> 6] |= 1 << (i1 & 63);
-        let i2 = (hash2 as usize) & self.mask;
-        self.bits[i2 >> 6] |= 1 << (i2 & 63);
-        let i3 = (hash3 as usize) & self.mask;
-        self.bits[i3 >> 6] |= 1 << (i3 & 63);
-    }
-    
-    #[inline(always)]
-    fn contains(&self, hash1: u64, hash2: u64, hash3: u64) -> bool {
-        let i1 = (hash1 as usize) & self.mask;
-        if (self.bits[i1 >> 6] & (1 << (i1 & 63))) == 0 { return false; }
-        let i2 = (hash2 as usize) & self.mask;
-        if (self.bits[i2 >> 6] & (1 << (i2 & 63))) == 0 { return false; }
-        let i3 = (hash3 as usize) & self.mask;
-        if (self.bits[i3 >> 6] & (1 << (i3 & 63))) == 0 { return false; }
-        true
-    }
-}
-
-#[inline(always)]
-fn hash_key(key: u64) -> (u64, u64, u64) {
-    let mut h = key.wrapping_mul(0x9E3779B97F4A7C15);
-    h ^= h >> 30;
-    h = h.wrapping_mul(0xBF58476D1CE4E5B9);
-    h ^= h >> 27;
-    h = h.wrapping_mul(0x94D049BB133111EB);
-    
-    let h1 = h;
-    let h2 = h.rotate_left(21).wrapping_mul(0x9E3779B97F4A7C15);
-    let h3 = h.rotate_left(42).wrapping_mul(0xBF58476D1CE4E5B9);
-    (h1, h2, h3)
+    let ptr = stream_ptr as *mut arrow::ffi_stream::FFI_ArrowArrayStream;
+    let stream = unsafe { std::ptr::replace(ptr, arrow::ffi_stream::FFI_ArrowArrayStream::empty()) };
+    Ok(arrow::ffi_stream::ArrowArrayStreamReader::try_new(stream)?)
 }
 
 #[pyfunction]
 fn init_threadpool(threads: usize) -> PyResult<()> {
-    match rayon::ThreadPoolBuilder::new().num_threads(threads).build_global() {
-        Ok(_) => Ok(()),
-        Err(e) => Err(PyRuntimeError::new_err(format!("Failed to init Rayon: {}", e))),
-    }
+    // Ignore error if global Rayon threadpool was already initialized in this process
+    let _ = rayon::ThreadPoolBuilder::new().num_threads(threads).build_global();
+    Ok(())
 }
 
 #[pyfunction]
@@ -110,9 +65,8 @@ fn run_bucketer_impl(
     y_col_name: String,
     z_buffer_limit: usize,
 ) -> Result<()> {
-    let stream_ptr = stream_ptr as *mut arrow::ffi_stream::FFI_ArrowArrayStream;
-    let stream = unsafe { std::ptr::read(stream_ptr) };
-    let mut reader = arrow::ffi_stream::ArrowArrayStreamReader::try_new(stream)?;
+    let mut reader = take_ffi_stream(stream_ptr)?;
+    let effective_max_zoom = max_zoom.min(20);
 
     let input_schema = reader.schema().clone();
 
@@ -135,13 +89,40 @@ fn run_bucketer_impl(
 
     let output_schema = Arc::new(Schema::new(out_fields));
 
+    // Configure hybrid spatial quadtree capacity structures:
+    // - Z = 0..=6 (5,461 tiles): lock-free sub-tile grid bitset (AtomicU64) so dense clusters
+    //   never starve sparse regions in coarse overview tiles.
+    // - Z = 7..=9 (344,064 tiles): lock-free flat AtomicU32 tile capacity counters (~1.37 MB).
+    // - Z >= 10: sparse DashMap<u64, AtomicU32> tile capacity counters.
+    let grid_int = if grid_size <= 1024.0 {
+        (grid_size.round() as usize).clamp(16, 512)
+    } else {
+        ((grid_size.sqrt()).round() as usize).clamp(16, 512)
+    };
+    let tile_capacity = if grid_size <= 1024.0 {
+        ((grid_int * grid_int) as u32).clamp(256, 262_144)
+    } else {
+        (grid_size.round() as u32).clamp(256, 262_144)
+    };
+    let words_per_tile = (grid_int * grid_int + 63) / 64;
+    const COARSE_MAX_Z: u8 = 6;
+    const COARSE_TILES: usize = 5_461; // (4^7 - 1) / 3
+    const MID_MAX_Z: u8 = 9;
+    const MID_TILES: usize = 349_525 - COARSE_TILES; // (4^10 - 1) / 3 - 5461
+
+    let coarse_bitsets: Vec<AtomicU64> = (0..(COARSE_TILES * words_per_tile))
+        .map(|_| AtomicU64::new(0))
+        .collect();
+    let mid_counts: Vec<AtomicU32> = (0..MID_TILES)
+        .map(|_| AtomicU32::new(0))
+        .collect();
+    let deep_counts: DashMap<u64, AtomicU32> = DashMap::new();
+
     py.allow_threads(|| -> Result<()> {
         let mut writers: HashMap<u8, ArrowWriter<File>> = HashMap::new();
         let mut z_buffers: HashMap<u8, Vec<RecordBatch>> = HashMap::new();
         let mut z_buffer_rows: HashMap<u8, usize> = HashMap::new();
-        // 2 GB Bloom filter ensures memory doesn't explode during Pass 1 for pixel-collision tracking
-        let mut occupied = BloomFilter::new(1_usize << 34); 
-        let mut row_count = 0;
+        let mut row_count: usize = 0;
 
         loop {
             let batch_res = Python::with_gil(|_py| reader.next());
@@ -161,47 +142,27 @@ fn run_bucketer_impl(
             let x_col = batch.column_by_name(&x_col_name).ok_or_else(|| anyhow::anyhow!("x column missing"))?;
             let y_col = batch.column_by_name(&y_col_name).ok_or_else(|| anyhow::anyhow!("y column missing"))?;
 
-            let x_f32 = cast(x_col, &DataType::Float32)?;
-            let y_f32 = cast(y_col, &DataType::Float32)?;
+            let x_f64 = cast(x_col, &DataType::Float64)?;
+            let y_f64 = cast(y_col, &DataType::Float64)?;
 
-            let x_arr = x_f32.as_any().downcast_ref::<Float32Array>().unwrap();
-            let y_arr = y_f32.as_any().downcast_ref::<Float32Array>().unwrap();
+            let x_arr = x_f64.as_any().downcast_ref::<Float64Array>().ok_or_else(|| anyhow::anyhow!("Failed to downcast x to Float64Array"))?;
+            let y_arr = y_f64.as_any().downcast_ref::<Float64Array>().ok_or_else(|| anyhow::anyhow!("Failed to downcast y to Float64Array"))?;
 
-            let mut z_builder = UInt8Builder::with_capacity(num_rows);
-            let mut tid_builder = UInt64Builder::with_capacity(num_rows);
-            let mut x_u16_builder = UInt16Builder::with_capacity(num_rows);
-            let mut y_u16_builder = UInt16Builder::with_capacity(num_rows);
+            // Spatial Quadtree Downsampler: assign each row to the highest level Z where its spatial cell/tile has capacity
+            let results: Vec<(u8, u64, u16, u16)> = (0..num_rows).into_par_iter().map(|i| {
+                let raw_x = if x_arr.is_null(i) { 0.5 } else { x_arr.value(i) };
+                let raw_y = if y_arr.is_null(i) { 0.5 } else { y_arr.value(i) };
+                let x = if raw_x.is_finite() { raw_x.clamp(0.0, 1.0) } else { 0.5 };
+                let y = if raw_y.is_finite() { raw_y.clamp(0.0, 1.0) } else { 0.5 };
 
-            for i in 0..num_rows {
-                let mut x = x_arr.value(i) as f64;
-                let mut y = y_arr.value(i) as f64;
-                x = x.clamp(0.0, 1.0);
-                y = y.clamp(0.0, 1.0);
+                let mut assigned_z = effective_max_zoom;
+                let mut final_tid = 0_u64;
+                let mut final_x_u16 = 0_u16;
+                let mut final_y_u16 = 0_u16;
 
-                let mut assigned_z = max_zoom;
-
-                for z in 0..=max_zoom {
-                    let scale = (1_u64 << z) as f64;
-                    let vx_z = (x * grid_size * scale) as u32;
-                    let vy_z = (y * grid_size * scale) as u32;
-
-                    let key: u64 = (z as u64) | ((vx_z as u64) << 8) | ((vy_z as u64) << 36);
-                    let (h1, h2, h3) = hash_key(key);
-                    if !occupied.contains(h1, h2, h3) {
-                        occupied.insert(h1, h2, h3);
-                        assigned_z = z;
-                        break;
-                    }
-                }
-                z_builder.append_value(assigned_z);
-
-                if assigned_z >= 32 {
-                    tid_builder.append_null();
-                    x_u16_builder.append_null();
-                    y_u16_builder.append_null();
-                } else {
-                    let n = (1_u32 << assigned_z) as f64;
-                    let max_index = (1_u32 << assigned_z).saturating_sub(1);
+                for z in 0..=effective_max_zoom {
+                    let n = (1_u64 << z) as f64;
+                    let max_index = (1_u32 << z).saturating_sub(1);
 
                     let scaled_x = x * n;
                     let scaled_y = y * n;
@@ -212,13 +173,52 @@ fn run_bucketer_impl(
                     let local_x = scaled_x - (ix as f64);
                     let local_y = scaled_y - (iy as f64);
 
-                    x_u16_builder.append_value((local_x * 65535.0).round().clamp(0.0, 65535.0) as u16);
-                    y_u16_builder.append_value((local_y * 65535.0).round().clamp(0.0, 65535.0) as u16);
+                    let h = fast_hilbert::xy2h(ix, iy, z);
+                    let offset = ((1_u64 << (z as u32 * 2)) - 1) / 3;
+                    let tid = h + offset;
 
-                    let h = fast_hilbert::xy2h(ix, iy, assigned_z);
-                    let offset = ((1_u64 << (assigned_z * 2)) - 1) / 3;
-                    tid_builder.append_value(h + offset);
+                    let claimed = if z == effective_max_zoom {
+                        true
+                    } else if z <= COARSE_MAX_Z {
+                        let gx = ((local_x * (grid_int as f64)) as usize).min(grid_int - 1);
+                        let gy = ((local_y * (grid_int as f64)) as usize).min(grid_int - 1);
+                        let bit_idx = gy * grid_int + gx;
+                        let word_idx = (tid as usize) * words_per_tile + (bit_idx >> 6);
+                        let mask = 1_u64 << (bit_idx & 63);
+                        let prev = coarse_bitsets[word_idx].fetch_or(mask, Ordering::Relaxed);
+                        (prev & mask) == 0
+                    } else if z <= MID_MAX_Z {
+                        let mid_idx = (tid as usize) - COARSE_TILES;
+                        let prev = mid_counts[mid_idx].fetch_add(1, Ordering::Relaxed);
+                        prev < tile_capacity
+                    } else {
+                        let entry = deep_counts.entry(tid).or_insert_with(|| AtomicU32::new(0));
+                        let prev = entry.fetch_add(1, Ordering::Relaxed);
+                        prev < tile_capacity
+                    };
+
+                    if claimed {
+                        assigned_z = z;
+                        final_tid = tid;
+                        final_x_u16 = (local_x * 65535.0).round().clamp(0.0, 65535.0) as u16;
+                        final_y_u16 = (local_y * 65535.0).round().clamp(0.0, 65535.0) as u16;
+                        break;
+                    }
                 }
+
+                (assigned_z, final_tid, final_x_u16, final_y_u16)
+            }).collect();
+
+            let mut z_builder = UInt8Builder::with_capacity(num_rows);
+            let mut tid_builder = UInt64Builder::with_capacity(num_rows);
+            let mut x_u16_builder = UInt16Builder::with_capacity(num_rows);
+            let mut y_u16_builder = UInt16Builder::with_capacity(num_rows);
+
+            for (assigned_z, tid, x_u16, y_u16) in results {
+                z_builder.append_value(assigned_z);
+                tid_builder.append_value(tid);
+                x_u16_builder.append_value(x_u16);
+                y_u16_builder.append_value(y_u16);
             }
 
             let z_arr = Arc::new(z_builder.finish());
@@ -235,7 +235,7 @@ fn run_bucketer_impl(
                 } else if name == "y_u16" {
                     out_columns.push(Arc::new(y_u16_builder.finish()));
                 } else {
-                    out_columns.push(batch.column_by_name(name).unwrap().clone());
+                    out_columns.push(batch.column_by_name(name).ok_or_else(|| anyhow::anyhow!("Column missing"))?.clone());
                 }
             }
 
@@ -243,7 +243,7 @@ fn run_bucketer_impl(
             
             // O(N) single-pass grouping by Z-level to drastically optimize the previous O(N * Z) evaluation
             let mut z_indices: HashMap<u8, Vec<u32>> = HashMap::new();
-            let z_arr_typed = z_arr.as_any().downcast_ref::<arrow::array::UInt8Array>().unwrap();
+            let z_arr_typed = z_arr.as_any().downcast_ref::<arrow::array::UInt8Array>().ok_or_else(|| anyhow::anyhow!("Failed to downcast z_arr"))?;
             
             for i in 0..num_rows {
                 let z = z_arr_typed.value(i);
@@ -269,14 +269,16 @@ fn run_bucketer_impl(
                 
                 if *rows >= z_buffer_limit {
                     let single_batch = arrow::compute::concat_batches(&output_schema, buffer.as_slice())?;
-                    let writer = writers.entry(z).or_insert_with(|| {
+                    if !writers.contains_key(&z) {
                         let path = format!("{}/z_{}.parquet", output_dir, z);
-                        let file = File::create(path).unwrap();
+                        let file = File::create(path)?;
                         let props = WriterProperties::builder()
                             .set_compression(parquet::basic::Compression::UNCOMPRESSED)
                             .build();
-                        ArrowWriter::try_new(file, output_schema.clone(), Some(props)).unwrap()
-                    });
+                        let new_writer = ArrowWriter::try_new(file, output_schema.clone(), Some(props))?;
+                        writers.insert(z, new_writer);
+                    }
+                    let writer = writers.get_mut(&z).unwrap();
                     writer.write(&single_batch)?;
                     buffer.clear();
                     *rows = 0;
@@ -287,26 +289,45 @@ fn run_bucketer_impl(
         for (z, buffer) in z_buffers.into_iter() {
             if !buffer.is_empty() {
                 let single_batch = arrow::compute::concat_batches(&output_schema, &buffer)?;
-                let writer = writers.entry(z).or_insert_with(|| {
+                if !writers.contains_key(&z) {
                     let path = format!("{}/z_{}.parquet", output_dir, z);
-                    let file = File::create(path).unwrap();
+                    let file = File::create(path)?;
                     let props = WriterProperties::builder()
                         .set_compression(parquet::basic::Compression::UNCOMPRESSED)
                         .build();
-                    ArrowWriter::try_new(file, output_schema.clone(), Some(props)).unwrap()
-                });
+                    let new_writer = ArrowWriter::try_new(file, output_schema.clone(), Some(props))?;
+                    writers.insert(z, new_writer);
+                }
+                let writer = writers.get_mut(&z).unwrap();
                 writer.write(&single_batch)?;
             }
         }
 
         log::info!("Bucketed {} rows into partitions.", row_count);
-        for (_, mut writer) in writers {
+        for (_, writer) in writers {
             writer.close()?;
         }
         Ok(())
     })?;
 
     Ok(())
+}
+
+struct PrecompressedZstd;
+
+impl Compressor for PrecompressedZstd {
+    fn compression(&self) -> Compression {
+        Compression::Zstd
+    }
+
+    fn compress(
+        &self,
+        f: &mut dyn FnMut(&mut dyn std::io::Write) -> std::io::Result<()>,
+        writer: &mut dyn std::io::Write,
+    ) -> pmtiles::PmtResult<()> {
+        f(writer)?;
+        Ok(())
+    }
 }
 
 fn flush_chunk_buffer(
@@ -338,7 +359,11 @@ fn flush_chunk_buffer(
                     export_batches.push(RecordBatch::try_new(schema.clone(), cols)?);
                 }
 
-                let single_batch = arrow::compute::concat_batches(&schema, &export_batches)?;
+                let single_batch = if export_batches.len() == 1 {
+                    export_batches.into_iter().next().unwrap()
+                } else {
+                    arrow::compute::concat_batches(&schema, &export_batches)?
+                };
                 let mut sink = Vec::new();
                 let mut stream_writer = StreamWriter::try_new_with_options(
                     &mut sink,
@@ -349,25 +374,28 @@ fn flush_chunk_buffer(
                 stream_writer.finish()?;
                 
                 if sink.len() > global_schema_size {
-                    // Try to safely check framing, if it fails, just warn instead of aborting the whole pipeline
+                    // Safely check framing, if it fails, abort because tile is corrupt
                     if sink.len() >= global_schema_size + 4 {
                         let next_bytes = &sink[global_schema_size..global_schema_size + 4];
                         if next_bytes != [0xFF, 0xFF, 0xFF, 0xFF] {
-                            log::warn!("Schema size mismatch! IPC framing shifted.");
+                            return Err(anyhow::anyhow!("Schema size mismatch! IPC framing shifted.").into());
                         }
                     }
                 }
+                let compressed_bytes = zstd::bulk::compress(&sink[global_schema_size..], 3)
+                    .map_err(|e| anyhow::anyhow!("Zstd compression failed: {}", e))?;
                 
-                Ok((tid, sink))
+                Ok((tid, compressed_bytes))
             })
             .collect();
             
         processed_tiles_res.map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
     })?;
 
-    for (tid, sink) in processed_tiles {
-        let coord: pmtiles::TileCoord = pmtiles::TileId::new(tid).unwrap().into();
-        writer.add_tile(coord, &sink[global_schema_size..])?;
+    for (tid, compressed_bytes) in processed_tiles {
+        let tile_id = pmtiles::TileId::new(tid)?;
+        let coord: pmtiles::TileCoord = tile_id.into();
+        writer.add_tile(coord, &compressed_bytes)?;
     }
 
     Ok(())
@@ -391,9 +419,7 @@ impl ArrowTilesPacker {
     #[new]
     #[pyo3(signature = (output_path, schema_stream_ptr, chunk_buffer_limit, custom_metadata=None))]
     fn new(output_path: String, schema_stream_ptr: usize, chunk_buffer_limit: usize, custom_metadata: Option<String>) -> PyResult<Self> {
-        let stream_ptr = schema_stream_ptr as *mut arrow::ffi_stream::FFI_ArrowArrayStream;
-        let stream = unsafe { std::ptr::read(stream_ptr) };
-        let mut reader = arrow::ffi_stream::ArrowArrayStreamReader::try_new(stream)
+        let reader = take_ffi_stream(schema_stream_ptr)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
         let input_schema = reader.schema().clone();
@@ -436,7 +462,7 @@ impl ArrowTilesPacker {
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
         let buf_writer = BufWriter::new(out_file);
         let writer = PmTilesWriter::new(TileType::Unknown)
-            .tile_compression(Compression::Zstd)
+            .tile_codec(PrecompressedZstd)
             .metadata(&metadata_json)
             .create(buf_writer)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
@@ -455,9 +481,7 @@ impl ArrowTilesPacker {
     }
 
     fn process_batch(&mut self, py: Python, stream_ptr: usize) -> PyResult<()> {
-        let stream_ptr = stream_ptr as *mut arrow::ffi_stream::FFI_ArrowArrayStream;
-        let stream = unsafe { std::ptr::read(stream_ptr) };
-        let mut reader = arrow::ffi_stream::ArrowArrayStreamReader::try_new(stream)
+        let mut reader = take_ffi_stream(stream_ptr)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
         loop {
@@ -477,11 +501,11 @@ impl ArrowTilesPacker {
 
             let tile_ids_col = batch
                 .column_by_name("final_tile_id")
-                .expect("final_tile_id missing");
+                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("final_tile_id missing"))?;
             let tile_ids = tile_ids_col
                 .as_any()
                 .downcast_ref::<UInt64Array>()
-                .expect("final_tile_id must be UInt64");
+                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("final_tile_id must be UInt64"))?;
 
             let mut start_idx = 0;
             let mut last_tid = if tile_ids.is_null(0) {
