@@ -266,3 +266,20 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
 
 - **Questions for owner (before Phase 2):**
   1. **Phase 1 Visual & Code Review:** Please inspect the Phase 1 commits and the three WebGPU screenshots (`phase1_legacy_gaia_full.png`, `phase1_v01_gaia_sample.png`, `phase1_v01_lmsys_sample.png`). Shall we proceed to **Phase 2 (Fast, Correct Priority Pyramids — 2-stage batch bucketer, single-pass SQL preflight, and priority-invariant benchmark)**?
+
+
+## 2026-11-19 — Phase 1 (post-review hotfix): `max_zoom <= 6` `coarse_counts` fix & Phase 2–5 review sync
+
+- **Done:**
+  1. **Fixed `max_zoom <= 6` out-of-bounds panic in `even_coverage` mode (`arrowtiles-engine/src/lib.rs:222`):** Unconditionally initialized `coarse_counts` (`5,461` `AtomicU32` slots = `21.3 KB`) so leaf/spill tiles at `z == nominal_max_zoom <= 6` never index an empty vector at `lib.rs:348`.
+  2. **Added 18-case regression matrix (`tests/test_phase1_spec_and_edge_cases.py`):** Verified RED failure (`index out of bounds: the len is 0`) on the unpatched binary for `max_zoom=4, sampling='even_coverage'`, rebuilt via `maturin develop --release`, and verified GREEN across every `max_zoom = 0..8` in both `'even_coverage'` and `'proportional'` modes with dense-cluster spillover + `validate_file` checks.
+  3. **Synced combined review additions into `logs/2026-11-19_05_PLAN_all_merged-consensus-revival-plan.md`:** Folded full `--resume` fingerprinting + `resume=True` test, single-pass SQL preflight, byte-identical output pass/fail gate, `> 16 MiB` `v0.1` tile error + category code bounds check, `64 MiB` explicit range / `413` error in `vite.config.ts`, free-text column policy (`⛔ D7a`), Phase 3 SplitMix64 random priority, and Phase 5 canonical `effectiveFlipY` into the governing plan.
+
+- **Evidence:**
+  - Command: `& "D:\exploratory\duckdb-extension\duckdb-arrowtiles\.venv\Scripts\python.exe" -m pytest -v -rs -p no:cacheprovider`
+  - Output: `31 passed, 1 skipped in 5.40s`.
+
+- **Questions for owner (before Phase 2):**
+  1. **⛔ `D7a` (Free-text columns in `build_generic`):** Confirm dropping string columns whose distinct count exceeds `max_categories` (`4,096`) by default (with a clear diagnostic log line) unless explicitly named in `columns=` / `--columns`?
+  2. **Legacy `lmsys_full.arrowtiles` vs. `v0.1` LMSys rebuild:** Keep `public/lmsys_full.arrowtiles` untouched in place (while `vite.config.ts` serves explicit ranges up to `64 MiB` and returns `413` above cap), or also build a clean `v0.1` `lmsys_v01.arrowtiles` alongside it without raw chat `content`?
+  3. **Go-ahead for Phase 2:** Ready to start **Phase 2**?

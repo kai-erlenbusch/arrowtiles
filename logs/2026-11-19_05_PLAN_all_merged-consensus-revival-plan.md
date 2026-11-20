@@ -115,21 +115,28 @@ flowchart TD
 
 ---
 
-## 4. Phase 2: Reproducible Builds & Completeness Suite (`Patch 4b`)
+## 4. Phase 2: Reproducible Builds & Completeness Suite (`Patch 4b` + Post-Phase-1 Review Additions)
 
-1. Append `, row_id ASC` tie-breaker to Pass 1 and Pass 2 `ORDER BY` queries.
+1. Append `, row_id ASC` tie-breaker to Pass 1 and Pass 2 `ORDER BY` queries *(done in Phase 1; retained)*.
 2. **Single-Hilbert (`z = 20`) Bit-Shift 2-Stage Bucketer (`Patch 4b`):**
    - **Stage A (Parallel, Pure Math):** Compute normalized `(x, y)` and **one** Hilbert index `h_20 = fast_hilbert::xy2h(ix_20, iy_20, 20)` per row at `z = 20` (covering both nominal and spilled zoom levels with zero extra cost).
    - **Stage B (Sequential, Priority Order):** Derive every zoom level `z`'s Hilbert index via bit shift `h_z = h_20 >> (2 * (20 - z))` (`tid_z = PYRAMID_OFFSET[z] + h_z`, equivalently `tid_{z-1} = (tid_z - 1) >> 2`) and claim cells/capacities in plain `Vec<u64>`, `Vec<u32>`, and `HashMap<u64, u32>` with saturating counts and zero atomics.
-   - Add a dedicated unit test verifying `PYRAMID_OFFSET[z] + (h_20 >> (2 * (20 - z))) == TileId::from(TileCoord::new(z, ix_z, iy_z))` across odd & even zoom levels `z = 0..=20`.
-3. Benchmark Pass 1 throughput delta on a **100M-row Gaia subset** (`⛔` pause if `> 20%` slower).
-4. Run `tests/test_determinism_and_completeness.py` verifying: (a) byte-identical SHA-256 rebuilds (unique & tied priorities), (b) `sum(rows) == input - dropped`, (c) unique `row_id`, and (d) per-cell ($Z \le 6$ `even_coverage`) / per-tile priority contract.
+   - Add a dedicated unit test verifying `PYRAMID_OFFSET[z] + (h_20 >> (2 * (20 - z))) == TileId::from(TileCoord::new(z, ix_z, iy_z))` across odd & even zoom levels `z = 0..=20` *(added in Phase 1; retained)*.
+3. **Single-Pass SQL Preflight & Full `--resume` Fingerprint:**
+   - Eliminate the duplicate `COUNT(*)` scan between `build_generic`/`build_gaia` and `ArrowTilesBuilder.build()` so input files are scanned once during preflight.
+   - Record a SHA-256 fingerprint of the resolved input file list (`path`, `size`, `mtime_ns`) + every build setting (`nominal_max_zoom`, `tile_capacity`, `max_tile_rows`, `sampling`, `grid_size`, `priority`, `columns`, `keep_source_xy`, `row_limit`, `allow_oversize_leaves`) in `partitions/manifest.json`, rejecting stale partitions when any input or setting changes, and add an explicit `resume=True` integration test (including stale-manifest rejection).
+4. **Strict `v0.1` Tile-Size & Category-Code Validation + Free-Text Policy (`⛔ D7a`):**
+   - Make compressed tiles `> 16 MiB` (`16,777,216` bytes) a **validation error** for `v0.1` archives in `validator.py` (keeping warning-only for legacy `v0.0`), and verify `max(col) < len(categories)` on categorical columns.
+   - Per owner decision `⛔ D7a`, drop high-cardinality free-text columns (`distinct > max_categories`, default `4,096`) by default in `build_generic` unless explicitly named in `columns=` / `--columns`, emitting a clear diagnostic log line.
+   - In `vite.config.ts`, keep the `16 MiB` cap on open-ended `Range: bytes=start-` (`!match[2]`), serve explicit bounded `Range: bytes=start-end` requests up to `64 MiB`, and return **`413 Payload Too Large`** (never silently truncating a `206` slice) if an explicit range exceeds `64 MiB`.
+5. Benchmark Pass 1 throughput delta on a **100M-row Gaia subset** (`⛔` pause if `> 20%` slower).
+6. Run `tests/test_determinism_and_completeness.py` with **byte-identical SHA-256 output across repeated builds** as a hard pass/fail gate (both unique and tied priorities), alongside `sum(rows) == input - dropped`, unique `row_id`, and the per-cell ($Z \le 6$ `even_coverage`) / per-tile priority contract.
 
 ---
 
 ## 5. Phase 3: Explicit Priority & Sampling
 
-1. Remove `sort_col="abs_m"` default; default to `hash(row_id, seed)` (`{"kind": "random", "seed": N}`).
+1. Remove `sort_col="abs_m"` default; default to an explicit **SplitMix64** integer mixing function over `(row_id, seed)` (`{"kind": "random", "seed": N}`) instead of DuckDB's version-dependent `hash()`, ensuring deterministic cross-version random ranking.
 2. Add explicit `--preset gaia` (Hammer projection, `phot_g_mean_mag ASC`—accepting both `phot_g_mean_mag` and legacy `abs_m` in viewer—and `even_coverage`).
 3. Pass `tile_capacity` and `sampling` (`even_coverage` vs. `proportional`) explicitly to `run_bucketer` (`max_capacity = 100_000` means `100,000`).
 4. Display active `priority` and `sampling` in viewer HUD; `⛔ D7` owner views LMSys in both modes and picks default.
@@ -145,7 +152,7 @@ flowchart TD
 
 ## 7. Phase 5a (Pure Refactor) & Phase 5b (Discrete Viewer Fixes)
 
-- **Phase 5a (Zero Behavior Change):** Split `src/main.ts` (`< 150` lines) into `DatasetSession`, `ViewState`, `RenderLoop`, `ControlsPanel`, and `ViewerLayer`; isolate Three.js internals; declare `fflate`, add `typecheck`, and (`⛔` after confirmation) remove unused deps (`@sentry/*`, `gl-matrix`, `stats.js`) and dead `ui.ts`, `counter.ts`, `compute_test.mjs`. Verify identical before/after behavior on both samples.
+- **Phase 5a (Zero Behavior Change):** Split `src/main.ts` (`< 150` lines) into `DatasetSession`, `ViewState`, `RenderLoop`, `ControlsPanel`, and `ViewerLayer` (deriving `PMTilesClient` `flipY` and `Scatterplot` `yRange` from a single canonical `ViewState.effectiveFlipY`); isolate Three.js internals; declare `fflate`, add `typecheck`, and (`⛔` after confirmation) remove unused deps (`@sentry/*`, `gl-matrix`, `stats.js`) and dead `ui.ts`, `counter.ts`, `compute_test.mjs`. Verify identical before/after behavior on both samples.
 - **Phase 5b (Discrete Fixes, Each Individually Checked):**
   1. Widen `accumBuffer` to `2 × u32` (`8 B/px`, checking `maxStorageBufferBindingSize` at 5K), separating `valSum` and `wSum | lineHits` in Modes 2 & 4 and keeping per-point curve unless `D10` changes it.
   2. CPU `Float64` Relative-to-Center tile offsets uploaded as `f32` (`F-07`) + Mode 4 `cpy < screenHeight` guard.

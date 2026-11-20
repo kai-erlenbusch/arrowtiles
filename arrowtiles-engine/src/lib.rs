@@ -219,11 +219,7 @@ fn run_bucketer_impl(
     } else {
         Vec::new()
     };
-    let coarse_counts: Vec<AtomicU32> = if !is_even_coverage {
-        (0..COARSE_TILES).map(|_| AtomicU32::new(0)).collect()
-    } else {
-        Vec::new()
-    };
+    let coarse_counts: Vec<AtomicU32> = (0..COARSE_TILES).map(|_| AtomicU32::new(0)).collect();
     let mid_counts: Vec<AtomicU32> = (0..MID_TILES).map(|_| AtomicU32::new(0)).collect();
     let deep_counts: DashMap<u64, AtomicU32> = DashMap::new();
 

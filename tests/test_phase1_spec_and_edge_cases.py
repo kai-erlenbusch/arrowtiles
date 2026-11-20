@@ -27,6 +27,61 @@ def test_hilbert_shift_invariants_rust() -> None:
     _core.verify_hilbert_shift_invariants()
 
 
+@pytest.mark.parametrize("sampling_mode", ["even_coverage", "proportional"])
+@pytest.mark.parametrize("max_zoom", list(range(0, 9)))
+def test_all_max_zooms_0_to_8_both_sampling_modes(
+    tmp_path: Path, sampling_mode: str, max_zoom: int
+) -> None:
+    """Regression test: build every max_zoom 0..=8 in both sampling modes with dense cluster spill."""
+    src_pq = tmp_path / f"zoom_{sampling_mode}_{max_zoom}.parquet"
+    out_at = tmp_path / f"zoom_{sampling_mode}_{max_zoom}.arrowtiles"
+
+    # 2 corner anchors fix bounds to [0, 1]^2 while 78 points cluster inside a single z=8 cell
+    # ([0.12500, 0.12508]^2), guaranteeing that even_coverage hits z == max_zoom (<= 6) and spills!
+    n_rows = 80
+    con = duckdb.connect()
+    con.execute(
+        f"""
+        COPY (
+            SELECT
+                CASE
+                    WHEN i == 0 THEN 0.0
+                    WHEN i == 1 THEN 1.0
+                    ELSE 0.12500 + (i % 10) * 0.000008
+                END AS x,
+                CASE
+                    WHEN i == 0 THEN 0.0
+                    WHEN i == 1 THEN 1.0
+                    ELSE 0.12500 + (i // 10) * 0.000008
+                END AS y,
+                CAST(i AS DOUBLE) AS score
+            FROM range({n_rows}) AS t(i)
+        ) TO '{src_pq.as_posix()}' (FORMAT PARQUET)
+        """
+    )
+    con.close()
+
+    res = build_generic(
+        input_parquet=src_pq,
+        output_path=out_at,
+        x_col="x",
+        y_col="y",
+        sort_col="score",
+        sampling=sampling_mode,
+        max_capacity=16,
+        max_tile_rows=20,
+        max_zoom=max_zoom,
+        temp_dir=tmp_path / f"tmp_{sampling_mode}_{max_zoom}",
+        show_progress=False,
+    )
+    assert res["total_rows"] == n_rows
+    assert res["observed_max_tile_rows"] <= 20
+
+    val = validate_file(out_at, expected_input_rows=n_rows)
+    assert val.ok, f"Failed at sampling={sampling_mode}, max_zoom={max_zoom}: {val.errors}"
+    assert val.header_max_zoom == res["actual_max_zoom"]
+
+
 def test_synthetic_edge_case_sample_and_roundtrip(tmp_path: Path) -> None:
     """Build synthetic edge-case archive (NaN/Inf/NULL coords, NaN aux, colliding x_norm, UInt8 + UInt16 categories)."""
     src_parquet = tmp_path / "edge_cases.parquet"
