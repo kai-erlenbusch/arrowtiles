@@ -10,6 +10,12 @@ conversation_id: e91adbce-084e-445b-98b1-a434c428c86d
 
 # Comprehensive Code Review & Technical Audit: ArrowTiles + DeepGraph
 
+> [!WARNING]
+> **Post-Verification Errata (2026-11-19 — see [`docs/PROGRESS_2026-11.md`](../docs/PROGRESS_2026-11.md) & [`2026-11-19_05_PLAN`](2026-11-19_05_PLAN_all_merged-consensus-revival-plan.md)):**
+> 1. **Finding `F-05` ("Supergiants with `abs_m <= 0.0` culled") is false for Gaia:** Verified across all `1,348,176,623` rows of `s3_cache/batch_*.parquet` that `abs_m` stores apparent G-band magnitude (`min = 1.9425`, `max = 21.4851`, `0` rows $\le 0$). The real underlying bug is `pmtiles.worker.ts` ignoring Arrow `nullBitmap` (turning SQL `NULL`s in `radial_velocity`, `teff_gspphot`, and `parallax` into `0.0`); Phase 3 renames the Gaia preset column to `phot_g_mean_mag` (retaining legacy `abs_m` viewer compatibility).
+> 2. **Finding `F-03` remediation ("Move ACES Filmic + sRGB to `fs_main`"):** Moving tone mapping out of `splat_pixel` would darken sparse Milky Way dust lanes ~6× and invalidate Science Lens presets (`ComputeRasterizer.ts` intentionally mirrors Three.js's fragment-before-8-bit-blend curve). Phase 5b widens `accumBuffer` to `2 × atomic<u32>` while preserving the per-point curve by default (`D10`).
+> 3. **Finding `B-13` ("Release Python GIL around `reader.next()`"):** Dropped—provides zero CLI throughput benefit and risks PyArrow/DuckDB C-stream GIL invariants.
+
 **Date:** 2026-11-19  
 **Audit Mode:** Strictly Read-Only Multi-Agent Full Review (`/comprehensive-review-full-review`)  
 **Repositories Audited:**

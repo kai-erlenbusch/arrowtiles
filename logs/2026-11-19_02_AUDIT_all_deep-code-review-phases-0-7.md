@@ -10,6 +10,13 @@ conversation_id: fe52eab7-65ce-45dd-8140-b03acd621444
 
 # Deep Code Review Audit: `duckdb-arrowtiles` & `deepgraph-arrowtiles-sandbox`
 
+> [!WARNING]
+> **Post-Verification Errata (2026-11-19 — see [`docs/PROGRESS_2026-11.md`](../docs/PROGRESS_2026-11.md) & [`2026-11-19_05_PLAN`](2026-11-19_05_PLAN_all_merged-consensus-revival-plan.md)):**
+> 1. **`z_indices: HashMap` iteration order (Finding #1):** Does *not* affect output determinism because each zoom level writes to its own `z_{z}.parquet` buffer in input row order. The real reproducibility bugs are the `into_par_iter()` slot-claim race (`P5`) and unbroken SQL `ORDER BY` ties (`P4`).
+> 2. **Single-word `atomic<u32>` pixel accumulators (Strength #2):** Do *not* prevent bit-field carry overflow under concurrent GPU workgroups (`atomicLoad` + `atomicAdd` is a TOCTOU race; $\ge 3$ concurrent threads overflow 10-bit Blue in `11-11-10`, and $\ge 6$ threads carry 20-bit `valSum` into `wSum` in Mode 2). Fixed in Phase 5b via `2 × atomic<u32>` per pixel.
+> 3. **Coordinate column duplication & `x_norm` collision (Finding #3):** `run_bucketer` drops `x_norm`/`y_norm`, while `build_generic` retains the *source* coordinate columns (e.g., `x_umap`) and renames its computed `x_norm` to `x_norm_1` when the input already contains `x_norm`—silently bypassing normalization (`P2`).
+> 4. **Per-tile `DictionaryBatch` framing (Finding #3):** Superseded by **D4** in [`SPEC.md`](../docs/SPEC.md) (`UInt8`/`UInt16` integer codes + metadata `stats[col].categories`, zero `DictionaryBatch` messages).
+
 ## 1. Executive Summary
 A full line-by-line review was conducted across both repositories prior to executing the revival plan. All findings in `HANDOFF_2026-11-19_arrowtiles-revival.md` were verified against source code, and **10 additional technical findings** (4 blocking/high, 4 important/medium, 2 minor/housekeeping) were identified and mapped into Phases 0–7.
 

@@ -195,3 +195,27 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
 - **Questions for owner (before Phase 1):**
   1. **⛔ D6 (Phase 1 samples in Git):** When Phase 1 builds `gaia_sample.arrowtiles`, `lmsys_sample.arrowtiles`, and the edge-case sample (`< 20 MB` each), do you want them kept untracked/generated via script (`samples/` gitignored) or committed to Git?
   2. **Go-ahead for Phase 1:** Ready to start **Phase 1** (`docs/SPEC.md` v0.1, `arrowtiles/` package + `pyproject.toml`, dense `row_id`, `UInt8`/`UInt16` categories, `max_tile_rows` up to `z = 20`, reference `reader`/`validate`, and Phase 1b viewer compatibility + `header.maxZoom` plumbing)?
+
+
+## 2026-11-19 — Phase 1 (Step 1 checkpoint): `docs/SPEC.md` v0.1 & pre-Phase-1 review guardrails
+
+- **Done:**
+  1. **Added post-verification errata headers to tracked audit logs:** Updated `logs/2026-11-19_02_AUDIT_all_deep-code-review-phases-0-7.md` and `logs/2026-11-19_03_AUDIT_all_comprehensive-code-review-and-archaeology.md` with prominent `> [!WARNING]` errata blocks correcting `z_indices` HashMap determinism, single-`u32` atomic overflow, `x_norm` source column behavior, `D4` integer category codes, apparent G-band `abs_m` (`0` rows `<= 0` across 1.35B rows), per-splat ACES+sRGB transfer parity, and dropping `B-13` GIL release.
+  2. **Folded all 7 pre-Phase-1 guardrails + `D6` into the consensus plan (`logs/2026-11-19_05_PLAN_all_merged-consensus-revival-plan.md`):**
+     - `lib.rs` returns `PyValueError` on unparseable/non-object/reserved-key `custom_metadata`.
+     - Exclude `row_id` from automatic GPU attribute pre-requests in `main.ts` + guard `bigint -> Number` in `pmtiles.worker.ts` for any 64-bit integer column.
+     - Two-tier capacity (`tile_capacity` at `z < nominal_max_zoom` vs. `max_tile_rows` at `z >= nominal_max_zoom` spilling up to `z = 20`), `PmTilesWriter.max_zoom(actual_max_z)`, and single Hilbert evaluation at `z = 20`.
+     - Seed `scatterplot.setDictionaries` from `metadata.stats[col].categories` on load, guard `NaN` in `Scatterplot.ts` alongside `ComputeRasterizer.ts`, and require an explicit deterministic `id_col` for direct `build(input_query=...)` callers.
+     - `validate` reports `max_compressed_tile_bytes` and warns/flags against the `16 MiB` range cap.
+     - `D6` locked: gitignore `samples/` and generate Gaia/LMSys samples via script + synthetic edge-case sample in `pytest`.
+  3. **Authored `docs/SPEC.md` (`v0.1`, 108 lines / ~2.2 pages):** Covers container identity, schema-stripped Arrow IPC framing (no `DictionaryBatch`), top-down `y_norm` + `bounds`, dense `row_id` & `total_rows + dropped_rows == input_rows`, `tile_capacity` vs. `max_tile_rows` spillover to `z = 20`, `proportional` vs. `even_coverage` priority contracts, finite-only `stats`, optional `view` hints, and reserved identifiers.
+  4. **Stopped before touching any Phase 1 writer or viewer code** per review checkpoint #7.
+
+- **Evidence:**
+  - `docs/SPEC.md` line count: `108` lines (`<= 3` pages target met).
+  - Writer `pytest` suite (`-v -rs -p no:cacheprovider`): unchanged (`7 passed, 1 skipped`).
+  - Both repositories clean on `revival/2026-11-wip` (zero Python/Rust/TS source files modified in this checkpoint).
+
+- **Questions for owner:**
+  1. **Review `docs/SPEC.md`:** Any edits or tightening needed in `docs/SPEC.md` before I implement the Phase 1 writer (`arrowtiles/` package + `lib.rs`), reference reader, validator, sample builder, and Phase 1b viewer compatibility?
+  2. **⛔ `git push`:** Let me know if you want `revival/2026-11-wip` pushed as an off-machine backup (note: tracked logs contain local `C:\Users\erlen\...` / `D:\...` paths and session UUIDs if either remote repo is public).

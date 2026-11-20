@@ -53,8 +53,8 @@ flowchart TD
 | **D2** | Move stale root `arrowtiles_core.pyd` (`2026-07-22`) to `archive/arrowtiles_core_2026-07-22.pyd` | **Approved & Active** | Phase 0 |
 | **D3** | Y-axis convention | **Locked: Top-down** (`y_norm = (max_y - y) / span_y`, matching PMTiles tile row `ty`) + `bounds` block for true aspect ratio | Phase 1 |
 | **D4** | Categorical columns | **Locked: Plain integer codes** (`UInt8` up to 256 categories, else `UInt16`) + `stats[col].categories` in metadata; `NULL` masked via Arrow `nullBitmap -> NaN` (never mapped to category `0`); viewer supports 64-color palette + deterministic hue wrap | Phase 1 |
-| **D5** | Leaf-tile size (`max_tile_rows`) | **Locked:** Enforced in writer by pushing overflow rows deeper up to `z = 20`; fails with count if a `z = 20` tile still overflows unless `--allow-oversize-leaves` is passed (recording actual `max_tile_rows`) | Phase 1 |
-| **D6** | Commit `<20 MB` sample files to Git vs. build/download script | **⛔ Ask owner in Phase 1** | Phase 1 |
+| **D5** | Leaf-tile size (`tile_capacity` vs. `max_tile_rows`) | **Locked:** Two distinct caps — `tile_capacity` (e.g. `100,000`) at `z < nominal_max_zoom`, and `max_tile_rows` (e.g. `262,144`) at `z >= nominal_max_zoom` spilling overflow up to `z = 20`; header `max_zoom` records `actual_max_z`; fails if a `z = 20` tile overflows unless `--allow-oversize-leaves` is passed | Phase 1 |
+| **D6** | Sample files (`<20 MB` each) | **Locked:** Keep `samples/*.arrowtiles` gitignored; generate Gaia/LMSys samples via `scripts/build_samples.py` (skipping tests when local source data is absent) and build the edge-case sample synthetically inside `pytest` | Phase 1 |
 | **D7** | Default sampling mode (`proportional` vs. `even_coverage`) | **⛔ Ask owner in Phase 3** after viewing LMSys in both modes | Phase 3 |
 | **D8** | Keep PMTiles + Arrow container vs. switch to Parquet | **⛔ Ask owner in Phase 4** after benchmark | Phase 4 |
 | **D9** | Compute-only point renderer vs. Dual-Renderer | **⛔ Ask owner before Phase 5a** | Pre-Phase 5 |
@@ -94,33 +94,34 @@ flowchart TD
 
 ### 3.2 Writer Package & Safety Overhaul (`arrowtiles/` + `lib.rs`)
 - Restructure `arrowtiles.py` into `arrowtiles/` (`builder.py`, `reader.py`, `validator.py`, `__init__.py`, `__main__.py`) + root `pyproject.toml` (`module-name = "arrowtiles_core"`, installing into `.venv` and never repo root).
-- **Dense Deterministic `row_id` (`Patch 3`):** Compute contiguous per-file row offsets from `parquet_file_metadata` over a sorted file list + `read_parquet(<files>, filename=true, file_row_number=true)` (`file_base_offset + file_row_number`, dense in `0 .. N-1`, `< 5 ms`, safe within JS `2^53`), or `--id-col`.
-- Filter `isfinite(x) AND isfinite(y)` (recording `dropped_rows`); guard all `MIN`/`MAX` with `FILTER (WHERE isfinite(col))`; `json.dumps(..., allow_nan=False)`; error on invalid/reserved `custom_metadata` keys in `lib.rs`.
+- **Dense Deterministic `row_id` (`Patch 3` + Custom SQL Rule):** For Parquet file/glob inputs (`build_generic` / `build_gaia`), compute contiguous per-file row offsets from `parquet_file_metadata` over a sorted file list + `read_parquet(<files>, filename=true, file_row_number=true)` (`file_base_offset + file_row_number`, dense in `0 .. N-1`, `< 5 ms`, safe within JS `2^53`), or `--id-col`. Direct `ArrowTilesBuilder.build(input_query=...)` callers **must** supply an explicit deterministic `id_col` (update `test_lmsys_pipeline.py` and `test_gaia_pipeline.py` accordingly).
+- Filter `isfinite(x) AND isfinite(y)` (recording `dropped_rows`); guard all `MIN`/`MAX` with `FILTER (WHERE isfinite(col))`; `json.dumps(..., allow_nan=False)`.
+- **Strict Custom Metadata Error in Rust:** In `lib.rs` (`ArrowTilesPacker::new`), return a `PyValueError` (never `log::warn!` + drop) if `custom_metadata` fails `serde_json::from_str`, is not a JSON object, or collides with reserved keys (`arrow_schema`, `format`, `version`, etc.).
 - Use `__at_x_norm`, `__at_y_norm`, drop raw source `x`/`y` by default (`--keep-source-xy` opt-in), and fail clearly on reserved input column names (`z`, `x_u16`, `y_u16`, `row_id`).
 - Cast categoricals to `UInt8` ($\le 256$) or `UInt16` codes in sorted category order (`D4`).
-- Enforce `max_tile_rows` at leaf levels by pushing overflow up to `z = 20` (`D5`).
-- Set `.min_zoom(0).max_zoom(...)` on `PmTilesWriter`, assert strictly increasing `tid`, write to `<output>.tmp` + rename, fix `finalize()` `.unwrap()`, remove `allow_unsigned_extensions`, escape `'` in paths, close DuckDB in `finally`, set Pass 1 `.set_max_row_group_size(100_000)` + `zstd(1)`, and persist `--resume` `manifest.json`.
+- **Two-Tier Capacity & `actual_max_z` Header (`D5`):** Apply `tile_capacity` (e.g. `100,000`) at `z < nominal_max_zoom` and `max_tile_rows` (e.g. `262,144`) at `z >= nominal_max_zoom`, spilling overflow up to `z = 20`. Set `PmTilesWriter` `.min_zoom(0).max_zoom(actual_max_z)` from the deepest non-empty `z_*.parquet` partition actually produced in Pass 1 (not nominal `--max-zoom`), assert strictly increasing `tid`, write to `<output>.tmp` + rename, fix `finalize()` `.unwrap()`, remove `allow_unsigned_extensions`, escape `'` in paths, close DuckDB in `finally`, set Pass 1 `.set_max_row_group_size(100_000)` + `zstd(1)`, and persist `--resume` `manifest.json`.
 
 ### 3.3 Reference Reader (`arrowtiles/reader.py`) & Validator (`python -m arrowtiles validate`)
 - `ArrowTilesReader`: lists tiles, reads metadata, decodes any `(z, x, y)` tile to `pyarrow.Table` with `x_decoded`/`y_decoded` in source units (and helper to map categorical integer codes back to `categories`).
-- `validate`: checks header, `format`/`version` (warning, not error, on legacy v0.0 files), schema + all tiles parse, `sum(tile_rows) == total_rows`, `row_id` uniqueness, and `<= max_tile_rows`.
+- `validate`: checks header, `format`/`version` (warning, not error, on legacy v0.0 files), schema + all tiles parse, `sum(tile_rows) == total_rows`, `row_id` uniqueness, `<= max_tile_rows`, and **reports `max_compressed_tile_bytes` across all tiles** (warning/flagging if any compressed tile approaches or exceeds the dev server's `16 MiB` single-range cap).
 
-### 3.4 Viewer v0.1 Compatibility & Fast Safety Fixes (`Patches 2 & 4a`)
-- Read v0.1 `format`/`version`, `bounds` (aspect ratio), `view` block, top-down generic `y`, and `UInt8`/`UInt16` metadata `categories` (keeping console-warn fallback for v0.0 files).
-- **Header `maxZoom` Plumbing (`Patch 2`):** Read `header.maxZoom` from PMTiles and replace hardcoded `14` at [`main.ts:768`](file:///D:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox/src/main.ts#L768) so `z = 15..20` overflow tiles under `D5` are visible *(temporary `f32` grid-snap past `z ≈ 13` accepted until Phase 5b)*.
-- **Arrow Nulls & Categorical `NaN` (`Patch 4a`):** Apply `nullBitmap -> NaN` in `pmtiles.worker.ts` (and `buf.fill(NaN)` for missing cols); guard `!(val == val)` *before* categorical palette lookup in `ComputeRasterizer.ts:401-406` (and expand `paletteBuf` from `% 10u` to 64 distinct colors + wrap note when `dictLen > 64`).
+### 3.4 Viewer v0.1 Compatibility & Fast Safety Fixes (`Patches 2 & 4a` + Guardrails)
+- Read v0.1 `format`/`version`, `bounds` (aspect ratio), `view` block, top-down generic `y`, and **seed `scatterplot.setDictionaries(...)` directly from `metadata.stats[col].categories` inside `loadDataset`** (since v0.1 files have no `DictionaryBatch` to trigger `onDictionariesLoaded`), keeping console-warn fallback for v0.0 files.
+- **Exclude `row_id` & Guard `BigInt` Columns:** Filter `'row_id'` (alongside `'x_u16'`, `'y_u16'`, `'z'`) out of automatic `schemaFields` GPU attribute requests in `main.ts`, and guard `typeof v === 'bigint' ? Number(v) : v` in `pmtiles.worker.ts` (`getFloat32Col`) so `BigUint64Array`/`BigInt64Array` columns never throw `TypeError`.
+- **Header `maxZoom` Plumbing (`Patch 2`):** Read `header.maxZoom` from PMTiles (`actual_max_z`) and replace hardcoded `14` at [`main.ts:768`](file:///D:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox/src/main.ts#L768) so spilled `z = 15..20` tiles under `D5` are visible *(temporary `f32` grid-snap past `z ≈ 13` accepted until Phase 5b)*.
+- **Arrow Nulls & Categorical `NaN` (`Patch 4a`):** Apply `nullBitmap -> NaN` in `pmtiles.worker.ts` (and `buf.fill(NaN)` for missing cols); guard `!(val == val)` *before* categorical palette lookup in **both** `ComputeRasterizer.ts:401-406` and `Scatterplot.ts` (`buildColorNode`), and expand `paletteBuf` from `% 10u` to 64 distinct colors + wrap note when `dictLen > 64`.
 - Cap non-spatial quadtree depth at `min(z, 2)` (`F-01`) and reset sticky `flipY` when exiting HR Diagram (`F-06`).
-- Build `<20 MB` Gaia, LMSys, and edge-case samples (`⛔ D6` before committing samples).
+- Provide `scripts/build_samples.py` (`samples/` gitignored per `D6`) for `<20 MB` Gaia & LMSys samples + synthetic edge-case sample inside `pytest`.
 
 ---
 
 ## 4. Phase 2: Reproducible Builds & Completeness Suite (`Patch 4b`)
 
 1. Append `, row_id ASC` tie-breaker to Pass 1 and Pass 2 `ORDER BY` queries.
-2. **Single-Hilbert Bit-Shift 2-Stage Bucketer (`Patch 4b`):**
-   - **Stage A (Parallel, Pure Math):** Compute normalized `(x, y)` and **one** Hilbert index `h_max = fast_hilbert::xy2h(ix_max, iy_max, effective_max_zoom)` per row at `effective_max_zoom`.
-   - **Stage B (Sequential, Priority Order):** Derive every zoom level `z`'s Hilbert index via bit shift `h_z = h_max >> (2 * (effective_max_zoom - z))` (`tid_z = PYRAMID_OFFSET[z] + h_z`) and claim cells/capacities in plain `Vec<u64>`, `Vec<u32>`, and `HashMap<u64, u32>` with saturating counts and zero atomics.
-   - Add a dedicated unit test verifying `PYRAMID_OFFSET[z] + (h_max >> (2 * (max_z - z))) == TileId::from(TileCoord::new(z, ix_z, iy_z))` across all `z = 0..=20`.
+2. **Single-Hilbert (`z = 20`) Bit-Shift 2-Stage Bucketer (`Patch 4b`):**
+   - **Stage A (Parallel, Pure Math):** Compute normalized `(x, y)` and **one** Hilbert index `h_20 = fast_hilbert::xy2h(ix_20, iy_20, 20)` per row at `z = 20` (covering both nominal and spilled zoom levels with zero extra cost).
+   - **Stage B (Sequential, Priority Order):** Derive every zoom level `z`'s Hilbert index via bit shift `h_z = h_20 >> (2 * (20 - z))` (`tid_z = PYRAMID_OFFSET[z] + h_z`, equivalently `tid_{z-1} = (tid_z - 1) >> 2`) and claim cells/capacities in plain `Vec<u64>`, `Vec<u32>`, and `HashMap<u64, u32>` with saturating counts and zero atomics.
+   - Add a dedicated unit test verifying `PYRAMID_OFFSET[z] + (h_20 >> (2 * (20 - z))) == TileId::from(TileCoord::new(z, ix_z, iy_z))` across odd & even zoom levels `z = 0..=20`.
 3. Benchmark Pass 1 throughput delta on a **100M-row Gaia subset** (`⛔` pause if `> 20%` slower).
 4. Run `tests/test_determinism_and_completeness.py` verifying: (a) byte-identical SHA-256 rebuilds (unique & tied priorities), (b) `sum(rows) == input - dropped`, (c) unique `row_id`, and (d) per-cell ($Z \le 6$ `even_coverage`) / per-tile priority contract.
 
