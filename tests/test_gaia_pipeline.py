@@ -12,7 +12,7 @@ import duckdb
 import pyarrow.ipc as ipc
 from pmtiles.reader import MmapSource, Reader, all_tiles
 
-from arrowtiles import ArrowTilesBuilder
+from arrowtiles import ArrowTilesBuilder, validate_file
 from conftest import zstd_decompress
 
 
@@ -46,15 +46,20 @@ def test_gaia_batch_schema_and_hammer_smoke_build(
     custom_query = f"""
         WITH raw_data AS (
             SELECT
+                CAST(row_number() OVER () - 1 AS UBIGINT) AS row_id,
                 ra, dec, magnitude, bv, parallax, pmra, pmdec, radial_velocity, teff_gspphot,
                 RADIANS(ra) AS ra_rad,
                 RADIANS(dec) AS dec_rad,
                 RADIANS(192.85948) AS a_g,
                 RADIANS(27.12825) AS d_g,
                 RADIANS(122.93192) AS l_ncp
-            FROM read_parquet('{gaia_batch0_parquet_path.as_posix()}')
-            WHERE ra IS NOT NULL AND dec IS NOT NULL
-            LIMIT {sample_limit}
+            FROM (
+                SELECT *
+                FROM read_parquet('{gaia_batch0_parquet_path.as_posix()}', file_row_number=true)
+                WHERE ra IS NOT NULL AND dec IS NOT NULL
+                ORDER BY file_row_number ASC
+                LIMIT {sample_limit}
+            )
         ),
         galactic AS (
             SELECT
@@ -70,6 +75,7 @@ def test_gaia_batch_schema_and_hammer_smoke_build(
             SELECT *, ((l_rad_raw + 5*PI()) % (2*PI())) - PI() AS l_rad FROM galactic
         )
         SELECT
+            row_id,
             CAST(( ( -2 * sqrt(2) * cos(b_rad) * sin(l_rad / 2) ) / sqrt(1 + cos(b_rad) * cos(l_rad / 2)) + 2.8284271247461903 ) / 5.6568542494923806 AS DOUBLE) AS x_norm,
             1.0 - CAST(( ((sqrt(2) * sin(b_rad)) / sqrt(1 + cos(b_rad) * cos(l_rad / 2))) + 1.4142135623730951 ) / 2.8284271247461903 AS DOUBLE) AS y_norm,
             CAST(magnitude AS FLOAT) AS abs_m,
@@ -82,17 +88,21 @@ def test_gaia_batch_schema_and_hammer_smoke_build(
         FROM wrapped
     """
 
-    builder = ArrowTilesBuilder(memory_limit="2GB", temp_dir=str(temp_dir))
-    builder.build(
-        input_query=custom_query,
-        output_path=str(output_arrowtiles),
-        sort_col="abs_m",
-        x_col="x_norm",
-        y_col="y_norm",
-        max_capacity=2_000,
-        max_zoom=10,
-        resume=False,
-    )
+    with ArrowTilesBuilder(memory_limit="2GB", temp_dir=str(temp_dir), show_progress=False) as builder:
+        builder.build(
+            input_query=custom_query,
+            output_path=str(output_arrowtiles),
+            sort_col="abs_m",
+            x_col="x_norm",
+            y_col="y_norm",
+            id_col="row_id",
+            max_capacity=2_000,
+            max_zoom=10,
+            resume=False,
+        )
+
+    val = validate_file(output_arrowtiles, expected_input_rows=sample_limit)
+    assert val.ok, f"Validation errors: {val.errors}"
 
     assert output_arrowtiles.is_file()
     with open(output_arrowtiles, "rb") as fh:

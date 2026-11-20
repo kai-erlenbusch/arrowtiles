@@ -5,6 +5,7 @@ target/
 __pycache__/
 *.pyc
 *.pyd
+*.pdb
 *.so
 .pytest_cache/
 .venv/

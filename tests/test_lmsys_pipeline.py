@@ -10,7 +10,7 @@ import duckdb
 import pyarrow.ipc as ipc
 from pmtiles.reader import MmapSource, Reader, all_tiles
 
-from arrowtiles import ArrowTilesBuilder
+from arrowtiles import ArrowTilesBuilder, validate_file
 from conftest import zstd_decompress
 
 
@@ -46,12 +46,18 @@ def test_lmsys_smoke_build_on_sample(mock_lmsys_parquet_path: Path, tmp_path: Pa
 
     custom_query = f"""
         SELECT
+            CAST(file_row_number AS UBIGINT) AS row_id,
             model,
             num_of_tokens,
             CAST((x - ({min_x})) / {range_x} AS DOUBLE) AS x_norm,
-            CAST((y - ({min_y})) / {range_y} AS DOUBLE) AS y_norm,
+            CAST((({max_y}) - y) / {range_y} AS DOUBLE) AS y_norm,
             CAST(num_of_tokens AS FLOAT) AS sort_metric
-        FROM (SELECT * FROM read_parquet('{mock_lmsys_parquet_path.as_posix()}') LIMIT {sample_limit})
+        FROM (
+            SELECT *
+            FROM read_parquet('{mock_lmsys_parquet_path.as_posix()}', file_row_number=true)
+            ORDER BY file_row_number ASC
+            LIMIT {sample_limit}
+        )
         WHERE x IS NOT NULL AND y IS NOT NULL
     """
 
@@ -62,18 +68,22 @@ def test_lmsys_smoke_build_on_sample(mock_lmsys_parquet_path: Path, tmp_path: Pa
         "colorScale": "rdbu",
     }
 
-    builder = ArrowTilesBuilder(memory_limit="2GB", temp_dir=str(temp_dir))
-    builder.build(
-        input_query=custom_query,
-        output_path=str(output_archive),
-        sort_col="sort_metric",
-        x_col="x_norm",
-        y_col="y_norm",
-        sort_dir="DESC",
-        max_capacity=2_000,
-        max_zoom=8,
-        custom_metadata=json.dumps(config),
-    )
+    with ArrowTilesBuilder(memory_limit="2GB", temp_dir=str(temp_dir), show_progress=False) as builder:
+        builder.build(
+            input_query=custom_query,
+            output_path=str(output_archive),
+            sort_col="sort_metric",
+            x_col="x_norm",
+            y_col="y_norm",
+            id_col="row_id",
+            sort_dir="DESC",
+            max_capacity=2_000,
+            max_zoom=8,
+            custom_metadata=json.dumps(config),
+        )
+
+    val = validate_file(output_archive, expected_input_rows=sample_limit)
+    assert val.ok, f"Validation errors: {val.errors}"
 
     assert output_archive.is_file()
     with open(output_archive, "rb") as fh:

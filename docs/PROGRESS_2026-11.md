@@ -219,3 +219,50 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
 - **Questions for owner:**
   1. **Review `docs/SPEC.md`:** Any edits or tightening needed in `docs/SPEC.md` before I implement the Phase 1 writer (`arrowtiles/` package + `lib.rs`), reference reader, validator, sample builder, and Phase 1b viewer compatibility?
   2. **⛔ `git push`:** Let me know if you want `revival/2026-11-wip` pushed as an off-machine backup (note: tracked logs contain local `C:\Users\erlen\...` / `D:\...` paths and session UUIDs if either remote repo is public).
+
+
+## 2026-11-19 — Phase 1 (finish): `arrowtiles/` v0.1 package, validator, reader, sample builder, and Phase 1b viewer compatibility
+
+- **Done:**
+  1. **Packaged `arrowtiles/` (`pyproject.toml` + `arrowtiles._core`):**
+     - Added `pyproject.toml` (`module-name = "arrowtiles._core"`, `python-packages = ["arrowtiles"]`, CLI script `arrowtiles = "arrowtiles.__main__:main"`), added `*.pdb` alongside `*.pyd` in `.gitignore`, and removed legacy root `arrowtiles.py`.
+     - Built `arrowtiles/_core.pyd` via `maturin develop --release` with **0 compiler warnings** (`set_max_row_group_row_count(Some(100_000))`).
+  2. **Upgraded Rust engine (`arrowtiles-engine/src/lib.rs`) to `SPEC.md` v0.1:**
+     - Two-tier capacity: `tile_capacity` at `z < nominal_max_zoom` (`even_coverage` `G x G` bitset at `z <= 6` where default `G = isqrt(tile_capacity)`, `proportional` counters otherwise) and `max_tile_rows` at `z >= nominal_max_zoom` spilling overflow up to `z = 20`.
+     - Fails cleanly when a `z = 20` tile exceeds `max_tile_rows` unless `allow_oversize_leaves=True` (in which case `metadata.max_tile_rows` records the observed maximum).
+     - Single Hilbert evaluation at `z = 20` (`fast_hilbert::xy2h(ix_20, iy_20, 20)`) deriving all coarser levels via 2-bit shifts (`PYRAMID_SIZE_BY_ZOOM[z] + (h_20 >> (2 * (20 - z)))`), guarded by `verify_hilbert_shift_invariants()` across exhaustive `z = 1..5` + 20,000 SplitMix64 samples (`0` violations vs. `pmtiles::TileCoord`).
+     - Enforces non-nullable `row_id: UInt64`, `x_u16: UInt16`, `y_u16: UInt16`, `z: UInt8` in the exported IPC `Schema`, rejects `DictionaryType`, rejects unparseable/non-object/reserved-key `custom_metadata` with `PyValueError`, checks monotonic `final_tile_id`, sets `.min_zoom(0).max_zoom(actual_max_z)`, and writes atomically via `<output>.tmp` -> `<output>`.
+  3. **Implemented v0.1 Python builder, reference reader, validator, and sample script (`arrowtiles/` + `scripts/build_samples.py`):**
+     - `arrowtiles/builder.py`: Deterministic `--temp-dir` (`./duckdb_temp`), removed `allow_unsigned_extensions`, added `close()`/context manager, SQL quote/path escaping, lexicographically sorted `parquet_file_metadata` dense `row_id = base_offset + file_row_number`, explicit `id_col` requirement for custom SQL queries, finite-only coordinate filtering (`dropped_rows`) and finite-only `stats` (`allow_nan=False`), `NULL`/`NaN`-last sorting in both `ASC` and `DESC`, `UInt8` (`1..256`) / `UInt16` (`257..65,535`) integer category encoding (`D4`), top-down `y_norm = (max_y - y) / span_y` (`D3`), internal `__at_*` coordinate/sort aliases avoiding collisions with user `x_norm` columns, and `partitions/manifest.json` for `--resume`.
+     - `arrowtiles/reader.py`: `ArrowTilesReader` validating `format`/`version` (rejecting unknown major version, warning on v0.0), vectorized `x_decoded`/`y_decoded` coordinate reconstruction, and optional category label decoding preserving `NULL`s.
+     - `arrowtiles/validator.py`: `validate_file` & `python -m arrowtiles validate` verifying PMTiles v3 header (`clustered`, `min_zoom == 0`, `max_zoom == actual_max_z`), v0.1 metadata/schema invariants, streaming tile IPC framing, `sum(tile_rows) == total_rows`, `total_rows + dropped_rows == expected_input_rows`, `<= max_tile_rows`, global `row_id` uniqueness, and reporting `max_compressed_tile_bytes` against the `16 MiB` HTTP range cap.
+     - `scripts/build_samples.py`: Generates gitignored `< 20 MB` v0.1 samples under `samples/` (`gaia_sample.arrowtiles` at `4.26 MiB` / `149,942` full-sky stars; `lmsys_sample.arrowtiles` at `0.77 MiB` / `100,000` rows).
+  4. **Implemented Phase 1b Viewer Compatibility (`deepgraph-arrowtiles-sandbox/src/`):**
+     - `PMTilesClient.ts`: Replaced hardcoded `z <= 14` cap with `archiveMaxZoom` read from the PMTiles header (`actual_max_z` on v0.1; `14` fallback when legacy v0.0 header reports default `22`) and capped non-spatial quadtree traversal (`!isSpatialX && !isSpatialY`) at `z <= 2` (`F-07`).
+     - `pmtiles.worker.ts`: Decoded Arrow `nullBitmap -> NaN` (`chunk.nullCount > 0`, respecting `chunk.offset`), filled missing columns with `NaN`, and converted `BigInt64Array`/`BigUint64Array` values via `Number(...)`.
+     - `Scatterplot.ts` & `ComputeRasterizer.ts`: Expanded categorical palette from 10 to 64 distinct colors + deterministic golden-ratio HSV fallback for codes `>= 64`, guarded `NaN` / `< 0` categorical values to neutral gray `(0.42, 0.42, 0.46)` before clamping (fixing `NULL` categories rendering as Category `0` in both Compute Atomic and Hardware Instanced engines; used TSL `mix` rather than `select` around `TextureNode` to avoid a Three.js `0.172.0` `generateUV` conditional-setup bug).
+     - `main.ts`: Added `format`/`version` check (warning on v0.0, rejecting unknown major), true aspect ratio from `metadata.bounds`, nested `metadata.view` support, `metadata.stats[col].categories` seeding on load, exclusion of `'row_id'`/`'z'`/`Utf8` from `schemaFields`, automatic `computeMode = 1` when coloring by categorical columns, and `state.flipY = false` reset across Gaia Sky Lenses (`F-06`).
+
+- **Evidence:**
+  - **Writer `pytest` Suite (`13 passed, 1 skipped`):**
+    - Command: `& "D:\exploratory\duckdb-extension\duckdb-arrowtiles\.venv\Scripts\python.exe" -m pytest -v -rs -p no:cacheprovider`
+    - Output: `13 passed, 1 skipped in 3.28s` (covers Hilbert bit-shift invariants across 20,000+ cases, synthetic edge-case archive with `NaN`/`Inf`/`NULL` coords + colliding `x_norm` + 20-category `UInt8` + 300-category `UInt16` + coordinate round-trip within `span / (2 * 65535 * 2^z)`, leaf spillover past `nominal_max_zoom` + `z=20` exact-duplicate overflow guard, reserved column & invalid/reserved `custom_metadata` errors in Python and Rust, multi-file dense `row_id`, and legacy `v0.0` compatibility).
+  - **Validator & `max_compressed_tile_bytes` Measurements:**
+    - `samples/gaia_sample.arrowtiles` (`v0.1`, `4.26 MiB`): `[PASS] spec=0.1 tiles=342 rows=149,942 dropped=0 zoom=0..7 (header=7) max_tile_rows=19,477 max_compressed_tile=566,728 B (0.54 MiB at (0, 0, 0))`.
+    - `samples/lmsys_sample.arrowtiles` (`v0.1`, `0.77 MiB`): `[PASS] spec=0.1 tiles=137 rows=100,000 dropped=0 zoom=0..5 (header=5) max_tile_rows=19,768 max_compressed_tile=137,717 B (0.13 MiB at (0, 0, 0))`.
+    - `public/gaia_full.arrowtiles` (`legacy v0.0`, first 50 coarse tiles): `[PASS (legacy v0.0)] tiles=50 rows=10,656,888 max_tile_rows=262,144 max_compressed_tile=7,266,623 B (6.93 MiB at (2, 1, 1))`.
+    - `public/lmsys_full.arrowtiles` (`legacy v0.0`, all 31,473 tiles): `[PASS (legacy v0.0)] tiles=31,473 rows=2,835,490 zoom=0..10 (header=22) max_tile_rows=56,201 max_compressed_tile=26,367,067 B (25.15 MiB at (3, 4, 4))` — empirically confirming the reviewer's warning that legacy `v0.0` archives embedding raw chat text `content` can exceed `16 MiB` (`25.15 MiB`), whereas `v0.1` numeric+categorical tiles stay `< 1 MiB` (`<= 7 MiB` on 262k-row Gaia tiles).
+  - **Viewer TypeScript, Production Build & Live Chrome WebGPU Verification:**
+    - `npx tsc --noEmit`: `exit code 0`.
+    - `npm run build`: `exit code 0` (`dist/` built cleanly).
+    - Live Chrome WebGPU Playwright check (`scratch/verify_phase1_viewer.mjs`): `exit code 0`, `pageErrors: []`, `consoleErrors: []`, legacy `v0.0` warning verified on `gaia_full.arrowtiles` (`archiveMaxZoom: 14`, `4.33M` stars at `155 FPS`), `v0.1` `gaia_sample.arrowtiles` rendered (`archiveMaxZoom: 7`, `row_id`/`z` excluded from GPU attributes, HR Diagram capped at `maxZ = 2`, `flipY` reset to `false` on Sky Lens switch), and `v0.1` `lmsys_sample.arrowtiles` rendered with `model` categorical legend in both `Compute (Atomic)` and `Hardware Instanced` at `240 FPS`.
+    - Screenshots saved for visual review:
+      - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase1_legacy_gaia_full.png`
+      - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase1_v01_gaia_sample.png`
+      - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase1_v01_lmsys_sample.png`
+
+- **Not done / failed:**
+  - **`git push`:** Not run (holding local commits on `revival/2026-11-wip` unless explicitly requested per `⛔` guardrail).
+
+- **Questions for owner (before Phase 2):**
+  1. **Phase 1 Visual & Code Review:** Please inspect the Phase 1 commits and the three WebGPU screenshots (`phase1_legacy_gaia_full.png`, `phase1_v01_gaia_sample.png`, `phase1_v01_lmsys_sample.png`). Shall we proceed to **Phase 2 (Fast, Correct Priority Pyramids — 2-stage batch bucketer, single-pass SQL preflight, and priority-invariant benchmark)**?

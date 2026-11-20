@@ -6,26 +6,26 @@ import base64
 import sys
 from pathlib import Path
 
-import arrowtiles_core
 import duckdb
 import pyarrow as pa
 import pyarrow.ipc as ipc
 from pmtiles.reader import MmapSource, Reader, all_tiles
 
-from arrowtiles import build_generic
+from arrowtiles import _core, build_generic, validate_file
 from conftest import REPO_ROOT, zstd_decompress
 
 
 def test_arrowtiles_core_loaded_from_venv() -> None:
-    """Verify arrowtiles_core is loaded from the local .venv, never repo root or global site-packages."""
-    loaded = Path(arrowtiles_core.__file__).resolve()
-    expected_venv = (
-        Path(sys.prefix).resolve()
-        if Path(sys.prefix).resolve() != Path(sys.base_prefix).resolve()
-        else (REPO_ROOT / ".venv").resolve()
-    )
-    assert loaded.is_relative_to(expected_venv), f"Unexpected arrowtiles_core path: {loaded}"
+    """Verify arrowtiles._core is loaded from the local package/.venv, never repo root or global site-packages."""
+    loaded = Path(_core.__file__).resolve()
+    allowed_roots = [(REPO_ROOT / "arrowtiles").resolve()]
+    if Path(sys.prefix).resolve() != Path(sys.base_prefix).resolve():
+        allowed_roots.append(Path(sys.prefix).resolve())
+    else:
+        allowed_roots.append((REPO_ROOT / ".venv").resolve())
+    assert any(loaded.is_relative_to(r) for r in allowed_roots), f"Unexpected _core path: {loaded}"
     assert not (REPO_ROOT / "arrowtiles_core.pyd").exists(), "Stale root arrowtiles_core.pyd must not exist"
+    assert hasattr(_core, "verify_hilbert_shift_invariants")
 
 
 def test_build_generic_synthetic_roundtrip(tmp_path: Path) -> None:
