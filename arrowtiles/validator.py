@@ -17,8 +17,8 @@ from pmtiles.tile import Compression, TileType
 
 from arrowtiles._zstd import zstd_decompress
 
-RANGE_WARN_BYTES = 8 * 1024 * 1024  # 8 MiB
-RANGE_CAP_BYTES = 16 * 1024 * 1024  # 16 MiB (dev server single-range cap)
+RANGE_WARN_BYTES = 16 * 1024 * 1024  # 16 MiB advisory warning (SPEC.md §2.5 SHOULD)
+EXPLICIT_RANGE_MAX_BYTES = 64 * 1024 * 1024  # 64 MiB hard ceiling (SPEC.md §2.5 MUST NOT exceed)
 
 REQUIRED_V01_METADATA_KEYS = (
     "format",
@@ -356,6 +356,7 @@ def validate_file(
                 errors.append(f"Failed to decode arrow_schema: {exc}")
 
         has_row_id = False
+        categorical_limits: dict[str, int] = {}
         if schema is not None:
             required_cols: dict[str, pa.DataType] = {
                 "x_u16": pa.uint16(),
@@ -390,6 +391,17 @@ def validate_file(
                             f"Internal column '{fld.name}' leaked into exported arrow_schema"
                         )
 
+                if "dropped_columns" in metadata:
+                    dcols = metadata["dropped_columns"]
+                    if not isinstance(dcols, list) or not all(isinstance(c, str) for c in dcols):
+                        errors.append("metadata.dropped_columns must be a list of strings")
+                    else:
+                        for dc in dcols:
+                            if schema.get_field_index(dc) >= 0:
+                                errors.append(
+                                    f"Column '{dc}' listed in metadata.dropped_columns is still present in arrow_schema"
+                                )
+
                 # Verify categorical columns in stats match UInt8 / UInt16 in schema
                 stats_obj = metadata.get("stats")
                 if isinstance(stats_obj, dict):
@@ -402,6 +414,8 @@ def validate_file(
                                 )
                             else:
                                 cats = col_stat.get("categories", [])
+                                if isinstance(cats, list) and len(cats) > 0:
+                                    categorical_limits[col_name] = len(cats)
                                 expected_pa = (
                                     pa.uint8() if len(cats) <= 256 else pa.uint16()
                                 )
@@ -522,6 +536,21 @@ def validate_file(
                             f"Tile {z_int}/{x_int}/{y_int} contains row(s) with mismatched 'z' column value"
                         )
 
+                    # Verify all categorical codes satisfy 0 <= code < len(categories)
+                    for cat_col_name, cat_len in categorical_limits.items():
+                        cat_col = table[cat_col_name]
+                        if cat_col.null_count < nrows:
+                            mm = pc.min_max(cat_col).as_py()
+                            c_min = mm.get("min")
+                            c_max = mm.get("max")
+                            if c_min is not None and c_max is not None and (
+                                int(c_min) < 0 or int(c_max) >= cat_len
+                            ):
+                                errors.append(
+                                    f"Tile {z_int}/{x_int}/{y_int} categorical column '{cat_col_name}' "
+                                    f"has out-of-range code(s) [{c_min}, {c_max}] (expected 0..{cat_len - 1})"
+                                )
+
                     if has_row_id:
                         rid_col = table["row_id"]
                         if rid_col.null_count > 0:
@@ -544,15 +573,19 @@ def validate_file(
                                 sampled_rowid_chunks.extend(sampled.chunks)
 
         # 5. Cross-tile & Header Post-Checks
-        if max_compressed_tile_bytes > RANGE_CAP_BYTES:
-            warnings_list.append(
+        if max_compressed_tile_bytes > EXPLICIT_RANGE_MAX_BYTES:
+            msg = (
                 f"Largest compressed tile ({max_compressed_tile_bytes:,} bytes at {max_compressed_tile_coord}) "
-                f"exceeds 16 MiB HTTP single-range cap ({RANGE_CAP_BYTES:,} bytes)"
+                f"exceeds 64 MiB hard ceiling ({EXPLICIT_RANGE_MAX_BYTES:,} bytes)"
             )
+            if is_legacy:
+                warnings_list.append(msg)
+            else:
+                errors.append(msg)
         elif max_compressed_tile_bytes > RANGE_WARN_BYTES:
             warnings_list.append(
                 f"Largest compressed tile ({max_compressed_tile_bytes:,} bytes at {max_compressed_tile_coord}) "
-                f"exceeds 8 MiB advisory threshold"
+                f"exceeds 16 MiB advisory threshold ({RANGE_WARN_BYTES:,} bytes)"
             )
 
         if max_tiles_to_scan is None:

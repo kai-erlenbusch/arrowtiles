@@ -2,20 +2,18 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
 use arrow::array::{
-    Array, Float64Array, RecordBatch, RecordBatchReader, UInt16Builder, UInt64Array, UInt64Builder,
-    UInt8Builder,
+    Array, Float64Array, RecordBatch, RecordBatchReader, UInt16Array, UInt64Array, UInt8Array,
 };
 use arrow::compute::{cast, take};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
-use dashmap::DashMap;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression as ParquetCompression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
@@ -46,6 +44,7 @@ const RESERVED_METADATA_KEYS: &[&str] = &[
     "max_tile_rows",
     "total_rows",
     "dropped_rows",
+    "dropped_columns",
     "stats",
     "tile_stats",
     "view",
@@ -61,25 +60,6 @@ fn take_ffi_stream(stream_ptr: usize) -> Result<arrow::ffi_stream::ArrowArrayStr
     let stream =
         unsafe { std::ptr::replace(ptr, arrow::ffi_stream::FFI_ArrowArrayStream::empty()) };
     Ok(arrow::ffi_stream::ArrowArrayStreamReader::try_new(stream)?)
-}
-
-#[inline]
-fn try_claim_counter(counter: &AtomicU32, limit: u32) -> bool {
-    let mut cur = counter.load(Ordering::Relaxed);
-    loop {
-        if cur >= limit {
-            return false;
-        }
-        match counter.compare_exchange_weak(
-            cur,
-            cur + 1,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => return true,
-            Err(actual) => cur = actual,
-        }
-    }
 }
 
 #[pyfunction]
@@ -212,19 +192,16 @@ fn run_bucketer_impl(
     let output_schema = Arc::new(Schema::new(out_fields));
 
     let words_per_tile = (grid_int * grid_int + 63) / 64;
-    let coarse_bitsets: Vec<AtomicU64> = if is_even_coverage {
-        (0..(COARSE_TILES * words_per_tile))
-            .map(|_| AtomicU64::new(0))
-            .collect()
+    let mut coarse_bitsets: Vec<u64> = if is_even_coverage {
+        vec![0_u64; COARSE_TILES * words_per_tile]
     } else {
         Vec::new()
     };
-    let coarse_counts: Vec<AtomicU32> = (0..COARSE_TILES).map(|_| AtomicU32::new(0)).collect();
-    let mid_counts: Vec<AtomicU32> = (0..MID_TILES).map(|_| AtomicU32::new(0)).collect();
-    let deep_counts: DashMap<u64, AtomicU32> = DashMap::new();
+    let mut coarse_counts: Vec<u32> = vec![0_u32; COARSE_TILES];
+    let mut mid_counts: Vec<u32> = vec![0_u32; MID_TILES];
+    let mut deep_counts: HashMap<u64, u32> = HashMap::new();
 
-    let max_z20_rows = AtomicU32::new(0);
-    let saw_non_finite = AtomicBool::new(false);
+    let mut max_z20_rows: u32 = 0;
 
     let writer_props = WriterProperties::builder()
         .set_max_row_group_row_count(Some(100_000))
@@ -265,6 +242,12 @@ fn run_bucketer_impl(
             .column_by_name(&y_col_name)
             .ok_or_else(|| anyhow::anyhow!("y column '{}' missing", y_col_name))?;
 
+        if x_col.null_count() > 0 || y_col.null_count() > 0 {
+            anyhow::bail!(
+                "NULL coordinate encountered in run_bucketer; filter coordinates before Pass 1"
+            );
+        }
+
         let x_f64 = cast(x_col, &DataType::Float64)?;
         let y_f64 = cast(y_col, &DataType::Float64)?;
 
@@ -277,30 +260,53 @@ fn run_bucketer_impl(
             .downcast_ref::<Float64Array>()
             .ok_or_else(|| anyhow::anyhow!("Failed to downcast y to Float64Array"))?;
 
-        let batch_results: Vec<(u8, u64, u16, u16)> = py.allow_threads(|| {
-            (0..num_rows)
-                .into_par_iter()
-                .map(|i| {
-                    if x_arr.is_null(i) || y_arr.is_null(i) {
-                        saw_non_finite.store(true, Ordering::Relaxed);
-                        return (0, 0, 0, 0);
-                    }
-                    let raw_x = x_arr.value(i);
-                    let raw_y = y_arr.value(i);
-                    if !raw_x.is_finite() || !raw_y.is_finite() {
-                        saw_non_finite.store(true, Ordering::Relaxed);
-                        return (0, 0, 0, 0);
-                    }
+        let x_vals = x_arr.values();
+        let y_vals = y_arr.values();
+        let saw_non_finite = AtomicBool::new(false);
 
-                    let x = raw_x.clamp(0.0, 1.0);
-                    let y = raw_y.clamp(0.0, 1.0);
+        // Stage A (Parallel, Stateless): compute (ix_20, iy_20, h_20) once per row
+        // Stage B (Sequential, Deterministic): claim cells/counters in strict priority order
+        let (z_vec, tid_vec, x_u16_vec, y_u16_vec, z_indices, batch_max_z) =
+            py.allow_threads(|| -> Result<_> {
+                let n20 = (1_u64 << MAX_SPILL_ZOOM) as f64;
+                let max_idx_20 = (1_u32 << MAX_SPILL_ZOOM) - 1;
 
-                    // Compute Hilbert index once at z = 20 and derive coarser levels via 2-bit shifts
-                    let n20 = (1_u64 << MAX_SPILL_ZOOM) as f64;
-                    let max_idx_20 = (1_u32 << MAX_SPILL_ZOOM) - 1;
-                    let ix_20 = (x * n20).min(max_idx_20 as f64) as u32;
-                    let iy_20 = (y * n20).min(max_idx_20 as f64) as u32;
-                    let h_20: u64 = fast_hilbert::xy2h(ix_20, iy_20, MAX_SPILL_ZOOM);
+                let stage_a: Vec<(u32, u32, u64)> = (0..num_rows)
+                    .into_par_iter()
+                    .map(|i| {
+                        let raw_x = x_vals[i];
+                        let raw_y = y_vals[i];
+                        if !raw_x.is_finite() || !raw_y.is_finite() {
+                            saw_non_finite.store(true, Ordering::Relaxed);
+                            return (0, 0, 0);
+                        }
+                        let x = raw_x.clamp(0.0, 1.0);
+                        let y = raw_y.clamp(0.0, 1.0);
+                        let ix_20 = (x * n20).min(max_idx_20 as f64) as u32;
+                        let iy_20 = (y * n20).min(max_idx_20 as f64) as u32;
+                        let h_20 = fast_hilbert::xy2h(ix_20, iy_20, MAX_SPILL_ZOOM);
+                        (ix_20, iy_20, h_20)
+                    })
+                    .collect();
+
+                if saw_non_finite.load(Ordering::Relaxed) {
+                    anyhow::bail!(
+                        "Non-finite or NULL coordinate encountered in run_bucketer; filter coordinates before Pass 1"
+                    );
+                }
+
+                let mut z_vec = Vec::with_capacity(num_rows);
+                let mut tid_vec = Vec::with_capacity(num_rows);
+                let mut x_u16_vec = Vec::with_capacity(num_rows);
+                let mut y_u16_vec = Vec::with_capacity(num_rows);
+                let mut z_indices: [Vec<u32>; (MAX_SPILL_ZOOM as usize) + 1] =
+                    std::array::from_fn(|_| Vec::new());
+                let mut local_max_z: u8 = 0;
+                let grid_f64 = grid_int as f64;
+
+                for (i, &(ix_20, iy_20, h_20)) in stage_a.iter().enumerate() {
+                    let x = x_vals[i].clamp(0.0, 1.0);
+                    let y = y_vals[i].clamp(0.0, 1.0);
 
                     let mut assigned_z = nom_z;
                     let mut final_tid = 0_u64;
@@ -314,10 +320,6 @@ fn run_bucketer_impl(
                         let h_z = if z == 0 { 0 } else { h_20 >> (2 * shift) };
                         let tid = PYRAMID_SIZE_BY_ZOOM[z as usize] + h_z;
 
-                        let n = (1_u64 << z) as f64;
-                        let local_x = (x * n - (ix as f64)).clamp(0.0, 1.0);
-                        let local_y = (y * n - (iy as f64)).clamp(0.0, 1.0);
-
                         let cap_for_z = if z < nom_z {
                             eff_tile_cap
                         } else {
@@ -325,34 +327,63 @@ fn run_bucketer_impl(
                         };
 
                         let claimed = if z == MAX_SPILL_ZOOM {
-                            let entry = deep_counts
+                            let count = deep_counts
                                 .entry(tid)
-                                .or_insert_with(|| AtomicU32::new(0));
-                            let prev = entry.fetch_add(1, Ordering::Relaxed);
-                            let count = prev.saturating_add(1);
-                            max_z20_rows.fetch_max(count, Ordering::Relaxed);
+                                .and_modify(|c| *c = c.saturating_add(1))
+                                .or_insert(1);
+                            if *count > max_z20_rows {
+                                max_z20_rows = *count;
+                            }
                             true
                         } else if z <= COARSE_MAX_Z && is_even_coverage && z < nom_z {
-                            let gx = ((local_x * (grid_int as f64)) as usize).min(grid_int - 1);
-                            let gy = ((local_y * (grid_int as f64)) as usize).min(grid_int - 1);
+                            let n = (1_u64 << z) as f64;
+                            let local_x = (x * n - (ix as f64)).clamp(0.0, 1.0);
+                            let local_y = (y * n - (iy as f64)).clamp(0.0, 1.0);
+                            let gx = ((local_x * grid_f64) as usize).min(grid_int - 1);
+                            let gy = ((local_y * grid_f64) as usize).min(grid_int - 1);
                             let bit_idx = gy * grid_int + gx;
                             let word_idx = (tid as usize) * words_per_tile + (bit_idx >> 6);
                             let mask = 1_u64 << (bit_idx & 63);
-                            let prev = coarse_bitsets[word_idx].fetch_or(mask, Ordering::Relaxed);
-                            (prev & mask) == 0
+                            let prev = coarse_bitsets[word_idx];
+                            if (prev & mask) == 0 {
+                                coarse_bitsets[word_idx] = prev | mask;
+                                final_x_u16 = (local_x * 65535.0).round().clamp(0.0, 65535.0) as u16;
+                                final_y_u16 = (local_y * 65535.0).round().clamp(0.0, 65535.0) as u16;
+                                assigned_z = z;
+                                final_tid = tid;
+                                break;
+                            }
+                            false
                         } else if z <= COARSE_MAX_Z {
-                            try_claim_counter(&coarse_counts[tid as usize], cap_for_z)
+                            let cur = &mut coarse_counts[tid as usize];
+                            if *cur < cap_for_z {
+                                *cur += 1;
+                                true
+                            } else {
+                                false
+                            }
                         } else if z <= MID_MAX_Z {
-                            let mid_idx = (tid as usize) - COARSE_TILES;
-                            try_claim_counter(&mid_counts[mid_idx], cap_for_z)
+                            let cur = &mut mid_counts[(tid as usize) - COARSE_TILES];
+                            if *cur < cap_for_z {
+                                *cur += 1;
+                                true
+                            } else {
+                                false
+                            }
                         } else {
-                            let entry = deep_counts
-                                .entry(tid)
-                                .or_insert_with(|| AtomicU32::new(0));
-                            try_claim_counter(entry.value(), cap_for_z)
+                            let cur = deep_counts.entry(tid).or_insert(0);
+                            if *cur < cap_for_z {
+                                *cur += 1;
+                                true
+                            } else {
+                                false
+                            }
                         };
 
                         if claimed {
+                            let n = (1_u64 << z) as f64;
+                            let local_x = (x * n - (ix as f64)).clamp(0.0, 1.0);
+                            let local_y = (y * n - (iy as f64)).clamp(0.0, 1.0);
                             assigned_z = z;
                             final_tid = tid;
                             final_x_u16 = (local_x * 65535.0).round().clamp(0.0, 65535.0) as u16;
@@ -361,38 +392,28 @@ fn run_bucketer_impl(
                         }
                     }
 
-                    (assigned_z, final_tid, final_x_u16, final_y_u16)
-                })
-                .collect()
-        });
+                    if assigned_z > local_max_z {
+                        local_max_z = assigned_z;
+                    }
+                    z_vec.push(assigned_z);
+                    tid_vec.push(final_tid);
+                    x_u16_vec.push(final_x_u16);
+                    y_u16_vec.push(final_y_u16);
+                    z_indices[assigned_z as usize].push(i as u32);
+                }
 
-        if saw_non_finite.load(Ordering::Relaxed) {
-            anyhow::bail!(
-                "Non-finite or NULL coordinate encountered in run_bucketer; filter coordinates before Pass 1"
-            );
+                Ok((z_vec, tid_vec, x_u16_vec, y_u16_vec, z_indices, local_max_z))
+            })?;
+
+        if batch_max_z > actual_max_z {
+            actual_max_z = batch_max_z;
         }
-
         row_count += num_rows as u64;
 
-        let mut z_builder = UInt8Builder::with_capacity(num_rows);
-        let mut tid_builder = UInt64Builder::with_capacity(num_rows);
-        let mut x_u16_builder = UInt16Builder::with_capacity(num_rows);
-        let mut y_u16_builder = UInt16Builder::with_capacity(num_rows);
-
-        for (assigned_z, tid, x_u16, y_u16) in batch_results {
-            if assigned_z > actual_max_z {
-                actual_max_z = assigned_z;
-            }
-            z_builder.append_value(assigned_z);
-            tid_builder.append_value(tid);
-            x_u16_builder.append_value(x_u16);
-            y_u16_builder.append_value(y_u16);
-        }
-
-        let z_arr = Arc::new(z_builder.finish());
-        let tid_arr = Arc::new(tid_builder.finish());
-        let x_u16_arr = Arc::new(x_u16_builder.finish());
-        let y_u16_arr = Arc::new(y_u16_builder.finish());
+        let z_arr: Arc<dyn Array> = Arc::new(UInt8Array::from(z_vec));
+        let tid_arr: Arc<dyn Array> = Arc::new(UInt64Array::from(tid_vec));
+        let x_u16_arr: Arc<dyn Array> = Arc::new(UInt16Array::from(x_u16_vec));
+        let y_u16_arr: Arc<dyn Array> = Arc::new(UInt16Array::from(y_u16_vec));
 
         let mut out_columns: Vec<Arc<dyn Array>> = Vec::with_capacity(output_schema.fields().len());
         for f in output_schema.fields() {
@@ -416,18 +437,6 @@ fn run_bucketer_impl(
         }
 
         let out_batch = RecordBatch::try_new(output_schema.clone(), out_columns)?;
-
-        let mut z_indices: [Vec<u32>; (MAX_SPILL_ZOOM as usize) + 1] =
-            std::array::from_fn(|_| Vec::new());
-        let z_arr_typed = z_arr
-            .as_any()
-            .downcast_ref::<arrow::array::UInt8Array>()
-            .ok_or_else(|| anyhow::anyhow!("Failed to downcast z_arr"))?;
-
-        for i in 0..num_rows {
-            let z = z_arr_typed.value(i) as usize;
-            z_indices[z].push(i as u32);
-        }
 
         for (z_usize, indices) in z_indices.into_iter().enumerate() {
             if indices.is_empty() {
@@ -472,7 +481,7 @@ fn run_bucketer_impl(
         }
     }
 
-    let observed_z20 = max_z20_rows.load(Ordering::Relaxed);
+    let observed_z20 = max_z20_rows;
     if observed_z20 > eff_leaf_cap && !allow_oversize_leaves {
         anyhow::bail!(
             "Leaf tile at z=20 exceeded max_tile_rows ({}) with {} rows (exact-duplicate coordinates). Pass --allow-oversize-leaves to permit.",

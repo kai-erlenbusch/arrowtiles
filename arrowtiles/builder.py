@@ -1,8 +1,9 @@
-"""ArrowTiles v0.1 2-pass DuckDB + Rust (PyO3) builder."""
+"""ArrowTiles v0.1 2-pass DuckDB + Rust (PyO3) builder (Phase 2 deterministic & single-scan preflight)."""
 
 from __future__ import annotations
 
 import glob
+import hashlib
 import json
 import math
 import multiprocessing
@@ -42,6 +43,7 @@ RESERVED_METADATA_KEYS = frozenset(
         "max_tile_rows",
         "total_rows",
         "dropped_rows",
+        "dropped_columns",
         "stats",
         "tile_stats",
         "view",
@@ -102,6 +104,20 @@ def _load_core_module():
                 "Native engine 'arrowtiles._core' not found. "
                 "Run `maturin develop --release` inside the project virtualenv."
             ) from exc
+
+
+def _compute_files_fingerprint(sorted_paths: list[str]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for p_str in sorted_paths:
+        st = os.stat(p_str)
+        out.append(
+            {
+                "path": p_str,
+                "size": int(st.st_size),
+                "mtime_ns": int(st.st_mtime_ns),
+            }
+        )
+    return out
 
 
 class ArrowTilesBuilder:
@@ -189,41 +205,69 @@ class ArrowTilesBuilder:
     def _base_duckdb_type(type_str: str) -> str:
         return str(type_str).split("(")[0].strip().upper()
 
-    def _compute_stats_for_query(
+    def _single_pass_preflight_direct(
         self,
-        valid_query: str,
-        col_types: list[tuple[str, str]],
+        input_query: str,
+        x_col: str,
+        y_col: str,
+        id_col: str,
+        retained_col_types: list[tuple[str, str]],
         categorical_columns: dict[str, list[str]],
-    ) -> dict[str, dict[str, Any]]:
+        need_stats: bool,
+    ) -> tuple[int, int, dict[str, dict[str, Any]]]:
+        """Run a single SQL scan over `input_query` for row counts, id_col checks, and optional stats."""
         assert self.con is not None
         q = self._quote_ident
-        aggs: list[str] = []
+        q_x = f"src.{q(x_col)}"
+        q_y = f"src.{q(y_col)}"
+        q_id = f"src.{q(id_col)}"
+        finite_pred = (
+            f"{q_x} IS NOT NULL AND {q_y} IS NOT NULL "
+            f"AND isfinite(CAST({q_x} AS DOUBLE)) AND isfinite(CAST({q_y} AS DOUBLE))"
+        )
+
+        aggs: list[str] = [
+            "COUNT(*) AS total_in",
+            f"COUNT(*) FILTER (WHERE {finite_pred}) AS valid_in",
+            f"COUNT(*) FILTER (WHERE {finite_pred} AND {q_id} IS NULL) AS null_ids",
+            f"COUNT(*) FILTER (WHERE {finite_pred} AND {q_id} < 0) AS neg_ids",
+        ]
         meta_plan: list[tuple[str, str]] = []
 
-        for col_name, col_type in col_types:
-            if col_name in categorical_columns:
-                qc = q(col_name)
-                aggs.append(f"COUNT(*) FILTER (WHERE {qc} IS NULL)")
-                meta_plan.append((col_name, "categorical"))
-            elif self._base_duckdb_type(col_type) in DUCKDB_NUMERIC_TYPES:
-                qc = q(col_name)
-                aggs.append(
-                    f"MIN(CAST({qc} AS DOUBLE)) FILTER (WHERE {qc} IS NOT NULL AND isfinite(CAST({qc} AS DOUBLE)))"
-                )
-                aggs.append(
-                    f"MAX(CAST({qc} AS DOUBLE)) FILTER (WHERE {qc} IS NOT NULL AND isfinite(CAST({qc} AS DOUBLE)))"
-                )
-                aggs.append(f"COUNT(*) FILTER (WHERE {qc} IS NULL)")
-                meta_plan.append((col_name, "numeric"))
+        if need_stats:
+            for col_name, col_type in retained_col_types:
+                qc = f"src.{q(col_name)}"
+                if col_name in categorical_columns:
+                    aggs.append(f"COUNT(*) FILTER (WHERE {finite_pred} AND {qc} IS NULL)")
+                    meta_plan.append((col_name, "categorical"))
+                elif self._base_duckdb_type(col_type) in DUCKDB_NUMERIC_TYPES:
+                    aggs.append(
+                        f"MIN(CAST({qc} AS DOUBLE)) FILTER (WHERE {finite_pred} AND {qc} IS NOT NULL AND isfinite(CAST({qc} AS DOUBLE)))"
+                    )
+                    aggs.append(
+                        f"MAX(CAST({qc} AS DOUBLE)) FILTER (WHERE {finite_pred} AND {qc} IS NOT NULL AND isfinite(CAST({qc} AS DOUBLE)))"
+                    )
+                    aggs.append(f"COUNT(*) FILTER (WHERE {finite_pred} AND {qc} IS NULL)")
+                    meta_plan.append((col_name, "numeric"))
 
-        if not aggs:
-            return {}
-
-        row = self.con.execute(f"SELECT {', '.join(aggs)} FROM ({valid_query}) AS __at_s").fetchone()
+        row = self.con.execute(
+            f"SELECT {', '.join(aggs)} FROM ({input_query}) AS src"
+        ).fetchone()
         assert row is not None
 
+        query_total_in = int(row[0] or 0)
+        query_valid_in = int(row[1] or 0)
+        null_ids = int(row[2] or 0)
+        neg_ids = int(row[3] or 0)
+        if null_ids > 0:
+            raise ValueError(f"id_col '{id_col}' contains {null_ids} NULL value(s)")
+        if neg_ids > 0:
+            raise ValueError(f"id_col '{id_col}' contains {neg_ids} negative value(s)")
+        if query_valid_in == 0:
+            raise ValueError("Input contains 0 rows with finite (x, y) coordinates")
+
         stats: dict[str, dict[str, Any]] = {}
-        idx = 0
+        idx = 4
         for col_name, kind in meta_plan:
             if kind == "categorical":
                 null_count = int(row[idx] or 0)
@@ -234,9 +278,7 @@ class ArrowTilesBuilder:
                     "null_count": null_count,
                 }
             else:
-                raw_min = row[idx]
-                raw_max = row[idx + 1]
-                null_count = int(row[idx + 2] or 0)
+                raw_min, raw_max, raw_null = row[idx], row[idx + 1], row[idx + 2]
                 idx += 3
                 min_f = float(raw_min) if raw_min is not None and math.isfinite(float(raw_min)) else 0.0
                 max_f = float(raw_max) if raw_max is not None and math.isfinite(float(raw_max)) else 0.0
@@ -244,9 +286,10 @@ class ArrowTilesBuilder:
                     "type": "numeric",
                     "min": min_f,
                     "max": max_f,
-                    "null_count": null_count,
+                    "null_count": int(raw_null or 0),
                 }
-        return stats
+
+        return query_valid_in, (query_total_in - query_valid_in), stats
 
     def build(
         self,
@@ -272,7 +315,11 @@ class ArrowTilesBuilder:
         bounds: dict[str, float] | None = None,
         stats: dict[str, dict[str, Any]] | None = None,
         view: dict[str, Any] | None = None,
+        dropped_columns: list[str] | None = None,
         pre_dropped_rows: int = 0,
+        _prevalidated_counts: tuple[int, int] | None = None,
+        _source_fingerprint: Any = None,
+        _pass1_only: bool = False,
     ) -> dict[str, Any]:
         """Execute the 2-pass DuckDB + Rust ArrowTiles v0.1 pipeline."""
         if self.con is None:
@@ -308,6 +355,7 @@ class ArrowTilesBuilder:
                 raise ValueError(f"grid_size must be between 16 and 512, got {eff_grid_size}")
 
         # Strictly validate custom_metadata upfront before Pass 1 spends compute
+        normalized_custom_metadata: str | None = None
         if custom_metadata is not None and custom_metadata.strip():
             parsed_custom = parse_strict_json_object(custom_metadata, label="custom_metadata")
             colliding_keys = sorted(RESERVED_METADATA_KEYS.intersection(parsed_custom.keys()))
@@ -315,6 +363,9 @@ class ArrowTilesBuilder:
                 raise ValueError(
                     f"custom_metadata contains reserved ArrowTiles key(s): {', '.join(colliding_keys)}"
                 )
+            normalized_custom_metadata = json.dumps(
+                parsed_custom, allow_nan=False, sort_keys=True
+            )
 
         core = _load_core_module()
         core.init_threadpool(self.rayon_threads)
@@ -341,7 +392,6 @@ class ArrowTilesBuilder:
                 f"sort_col '{sort_col}' not found in input query columns: {col_order}"
             )
 
-        # Check reserved column collisions on user payload columns
         internal_xy = {x_col, y_col}
         for col in col_order:
             if col in internal_xy or col == id_col:
@@ -408,17 +458,16 @@ class ArrowTilesBuilder:
             priority_meta = {"kind": "random", "seed": int(seed)}
             order_dir_pass = "ASC NULLS LAST"
 
-        # Build projection for Pass 1 (mapping categoricals to UInt8/UInt16 codes up front)
         select_exprs: list[str] = [f"CAST(src.{q_id} AS UBIGINT) AS \"row_id\""]
         join_clauses: list[str] = []
         retained_col_types: list[tuple[str, str]] = []
+        source_col_types_for_stats: list[tuple[str, str]] = []
 
         for join_idx, col in enumerate(col_order):
-            if col == id_col:
-                continue
-            if col in internal_xy:
+            if col == id_col or col in internal_xy:
                 continue
             qc = q(col)
+            source_col_types_for_stats.append((col, schema_map[col]))
             if col in cat_lookup_tables and self._base_duckdb_type(schema_map[col]) not in DUCKDB_INTEGER_TYPES:
                 tbl_name, code_sql_type = cat_lookup_tables[col]
                 alias = f"__at_cj_{join_idx}"
@@ -440,27 +489,22 @@ class ArrowTilesBuilder:
             f"AND isfinite(CAST(src.{q_x} AS DOUBLE)) AND isfinite(CAST(src.{q_y} AS DOUBLE))"
         )
 
-        # Count any non-finite rows in input_query and verify non-null non-negative id_col
-        counts_row = self.con.execute(
-            f"""
-            SELECT
-                COUNT(*) AS total_in,
-                COUNT(*) FILTER (WHERE {finite_pred}) AS valid_in,
-                COUNT(*) FILTER (WHERE {finite_pred} AND src.{q_id} IS NULL) AS null_ids,
-                COUNT(*) FILTER (WHERE {finite_pred} AND src.{q_id} < 0) AS neg_ids
-            FROM ({input_query}) AS src
-            """
-        ).fetchone()
-        assert counts_row is not None
-        query_total_in, query_valid_in, null_ids, neg_ids = (int(v or 0) for v in counts_row)
-        if null_ids > 0:
-            raise ValueError(f"id_col '{id_col}' contains {null_ids} NULL value(s)")
-        if neg_ids > 0:
-            raise ValueError(f"id_col '{id_col}' contains {neg_ids} negative value(s)")
-        if query_valid_in == 0:
-            raise ValueError("Input contains 0 rows with finite (x, y) coordinates")
-
-        total_dropped_rows = int(pre_dropped_rows) + (query_total_in - query_valid_in)
+        # Single-pass preflight ONLY when not already computed by build_generic / build_gaia
+        if _prevalidated_counts is not None and stats is not None:
+            _valid_in, total_dropped_rows = int(_prevalidated_counts[0]), int(_prevalidated_counts[1])
+            computed_stats = stats
+        else:
+            _valid_in, query_dropped, direct_stats = self._single_pass_preflight_direct(
+                input_query=input_query,
+                x_col=x_col,
+                y_col=y_col,
+                id_col=id_col,
+                retained_col_types=source_col_types_for_stats,
+                categorical_columns=cat_cols,
+                need_stats=(stats is None),
+            )
+            total_dropped_rows = int(pre_dropped_rows) + query_dropped
+            computed_stats = stats if stats is not None else direct_stats
 
         valid_projected_sql = f"""
             SELECT {', '.join(select_exprs)}
@@ -468,13 +512,6 @@ class ArrowTilesBuilder:
             {' '.join(join_clauses)}
             WHERE {finite_pred}
         """
-
-        if stats is None:
-            computed_stats = self._compute_stats_for_query(
-                valid_projected_sql, retained_col_types, cat_cols
-            )
-        else:
-            computed_stats = stats
 
         bounds_meta = bounds or {
             "min_x": 0.0,
@@ -485,6 +522,27 @@ class ArrowTilesBuilder:
         for bk in ("min_x", "max_x", "min_y", "max_y"):
             if bk not in bounds_meta or not math.isfinite(float(bounds_meta[bk])):
                 raise ValueError(f"bounds['{bk}'] must be a finite float")
+
+        dropped_cols_list = [str(c) for c in (dropped_columns or [])]
+
+        # Compute full SHA-256 build fingerprint for --resume safety
+        fingerprint_payload = {
+            "source": _source_fingerprint if _source_fingerprint is not None else {"query": input_query},
+            "nominal_max_zoom": int(nominal_max_zoom),
+            "tile_capacity": int(tile_capacity),
+            "configured_max_tile_rows": int(configured_max_tile_rows),
+            "sampling": sampling,
+            "grid_size": int(eff_grid_size),
+            "priority": priority_meta,
+            "id_col": id_col,
+            "retained_columns": [c for c, _ in retained_col_types],
+            "categorical_columns": cat_cols,
+            "dropped_columns": dropped_cols_list,
+            "allow_oversize_leaves": bool(allow_oversize_leaves),
+        }
+        manifest_fingerprint = hashlib.sha256(
+            json.dumps(fingerprint_payload, sort_keys=True, allow_nan=False).encode("utf-8")
+        ).hexdigest()
 
         t_global = time.time()
         output_path_str = str(output_path)
@@ -501,7 +559,7 @@ class ArrowTilesBuilder:
 
         try:
             # ==========================================
-            # PASS 1: DuckDB Priority Sort -> Rust Bucketer
+            # PASS 1: DuckDB Priority Sort -> Rust 2-Stage Bucketer
             # ==========================================
             resumed_pass1 = False
             actual_max_z = 0
@@ -510,22 +568,33 @@ class ArrowTilesBuilder:
 
             existing_partitions = glob.glob(os.path.join(temp_partition_dir, "z_*.parquet"))
             if resume and existing_partitions and os.path.isfile(manifest_path):
-                with open(manifest_path, "r", encoding="utf-8") as mf:
-                    manifest = json.load(mf)
+                try:
+                    with open(manifest_path, "r", encoding="utf-8") as mf:
+                        manifest = json.load(mf)
+                except Exception:
+                    manifest = {}
+
+                expected_deepest = os.path.join(
+                    temp_partition_dir, f"z_{int(manifest.get('actual_max_z', -1))}.parquet"
+                )
                 if (
-                    manifest.get("format") == "arrowtiles-partitions-v1"
-                    and manifest.get("nominal_max_zoom") == nominal_max_zoom
-                    and manifest.get("tile_capacity") == tile_capacity
-                    and manifest.get("sampling") == sampling
+                    manifest.get("format") == "arrowtiles-partitions-v2"
+                    and manifest.get("fingerprint") == manifest_fingerprint
+                    and os.path.isfile(expected_deepest)
                 ):
                     actual_max_z = int(manifest["actual_max_z"])
                     observed_z20 = int(manifest["observed_z20"])
                     bucketed_rows = int(manifest["total_rows"])
                     total_dropped_rows = int(manifest.get("dropped_rows", total_dropped_rows))
                     resumed_pass1 = True
+                else:
+                    print(
+                        "[ArrowTiles] --resume manifest fingerprint mismatch or incomplete partitions; "
+                        "invalidating stale partitions and re-running Pass 1.",
+                        flush=True,
+                    )
 
             if not resumed_pass1:
-                # Wipe any stale partition artifacts before running Pass 1
                 for stale_file in glob.glob(os.path.join(temp_partition_dir, "*")):
                     if os.path.isfile(stale_file):
                         os.remove(stale_file)
@@ -556,11 +625,13 @@ class ArrowTilesBuilder:
                 )
 
                 manifest_payload = {
-                    "format": "arrowtiles-partitions-v1",
+                    "format": "arrowtiles-partitions-v2",
+                    "fingerprint": manifest_fingerprint,
                     "actual_max_z": int(actual_max_z),
                     "observed_z20": int(observed_z20),
                     "total_rows": int(bucketed_rows),
                     "dropped_rows": int(total_dropped_rows),
+                    "dropped_columns": dropped_cols_list,
                     "nominal_max_zoom": int(nominal_max_zoom),
                     "tile_capacity": int(tile_capacity),
                     "max_tile_rows": int(configured_max_tile_rows),
@@ -568,7 +639,22 @@ class ArrowTilesBuilder:
                     "grid_size": int(eff_grid_size),
                 }
                 with open(manifest_path, "w", encoding="utf-8") as mf:
-                    json.dump(manifest_payload, mf, allow_nan=False, indent=2)
+                    json.dump(manifest_payload, mf, allow_nan=False, sort_keys=True, indent=2)
+
+            if _pass1_only:
+                for tbl_name, _ in cat_lookup_tables.values():
+                    self.con.execute(f"DROP TABLE IF EXISTS {q(tbl_name)}")
+                return {
+                    "output_path": output_path_str,
+                    "total_rows": int(bucketed_rows),
+                    "dropped_rows": int(total_dropped_rows),
+                    "dropped_columns": dropped_cols_list,
+                    "actual_max_zoom": int(actual_max_z),
+                    "resumed_pass1": resumed_pass1,
+                    "pass1_only": True,
+                    "fingerprint": manifest_fingerprint,
+                    "elapsed_seconds": time.time() - t_global,
+                }
 
             # ==========================================
             # PASS 2: DuckDB Hilbert Sort -> Rust Packer
@@ -603,12 +689,13 @@ class ArrowTilesBuilder:
                 "max_tile_rows": int(effective_max_tile_rows),
                 "total_rows": int(bucketed_rows),
                 "dropped_rows": int(total_dropped_rows),
+                "dropped_columns": dropped_cols_list,
                 "stats": computed_stats,
             }
             if view:
                 spec_metadata["view"] = view
 
-            spec_metadata_json = json.dumps(spec_metadata, allow_nan=False)
+            spec_metadata_json = json.dumps(spec_metadata, allow_nan=False, sort_keys=True)
 
             first_part_sql = self._sql_str(Path(partitions[0]).as_posix())
             first_part_schema = (
@@ -635,7 +722,7 @@ class ArrowTilesBuilder:
                 int(actual_max_z),
                 int(effective_max_tile_rows),
                 spec_metadata_json,
-                custom_metadata,
+                normalized_custom_metadata,
             )
 
             part_iter = (
@@ -671,9 +758,12 @@ class ArrowTilesBuilder:
                 "output_path": output_path_str,
                 "total_rows": int(packed_rows),
                 "dropped_rows": int(total_dropped_rows),
+                "dropped_columns": dropped_cols_list,
                 "actual_max_zoom": int(actual_max_z),
                 "observed_max_tile_rows": int(observed_max_rows),
                 "max_compressed_tile_bytes": int(max_compressed_bytes),
+                "resumed_pass1": resumed_pass1,
+                "fingerprint": manifest_fingerprint,
                 "elapsed_seconds": time.time() - t_global,
             }
         except Exception:
@@ -753,6 +843,7 @@ def build_generic(
     threads: int | None = None,
     custom_config: str | None = None,
     show_progress: bool = True,
+    _pass1_only: bool = False,
 ) -> dict[str, Any]:
     """Build a spec-compliant v0.1 .arrowtiles archive from Parquet file(s) or glob."""
     if not (1 <= int(max_categories) <= MAX_CATEGORIES_CAP):
@@ -768,9 +859,17 @@ def build_generic(
         con = builder.con
         q = ArrowTilesBuilder._quote_ident
 
-        _sorted_paths, _meta_rows, files_sql = _prepare_parquet_files_and_offsets(
+        sorted_paths, _meta_rows, files_sql = _prepare_parquet_files_and_offsets(
             con, input_parquet, row_limit=row_limit
         )
+        source_fp = {
+            "files": _compute_files_fingerprint(sorted_paths),
+            "row_limit": int(row_limit) if row_limit is not None else None,
+            "x_col": x_col,
+            "y_col": y_col,
+            "keep_source_xy": bool(keep_source_xy),
+            "max_categories": int(max_categories),
+        }
 
         schema_rows = con.execute(
             f"DESCRIBE SELECT * FROM read_parquet({files_sql})"
@@ -787,10 +886,12 @@ def build_generic(
         if id_col is not None and id_col not in col_type_map:
             raise ValueError(f"id_col '{id_col}' not found in Parquet columns: {all_cols}")
 
+        explicit_cols_set: set[str] | None = None
         if columns is not None:
             missing_req = [c for c in columns if c not in col_type_map]
             if missing_req:
                 raise ValueError(f"Requested column(s) not found in Parquet schema: {missing_req}")
+            explicit_cols_set = set(columns)
             payload_cols = list(dict.fromkeys(columns))
             if sort_col is not None and sort_col not in payload_cols and sort_col not in (x_col, y_col, id_col):
                 payload_cols.append(sort_col)
@@ -818,8 +919,17 @@ def build_generic(
                     f"Input column '{c}' collides with reserved ArrowTiles column name"
                 )
 
-        # Build deterministic base CTE with dense row_id (and optional row_limit)
-        needed_src_cols = list(dict.fromkeys([*payload_cols, x_col, y_col, *([id_col] if id_col else []), *([sort_col] if sort_col else [])]))
+        needed_src_cols = list(
+            dict.fromkeys(
+                [
+                    *payload_cols,
+                    x_col,
+                    y_col,
+                    *([id_col] if id_col else []),
+                    *([sort_col] if sort_col else []),
+                ]
+            )
+        )
         src_proj = ", ".join(f"src.{q(c)}" for c in needed_src_cols)
         if id_col is not None:
             row_id_expr = f"src.{q(id_col)} AS \"__at_row_id\""
@@ -845,28 +955,6 @@ def build_generic(
             {limit_clause}
         """
 
-        if id_col is not None:
-            dup_check = con.execute(
-                f"""
-                SELECT
-                    COUNT(*) AS n_rows,
-                    COUNT("__at_row_id") AS n_non_null,
-                    COUNT(DISTINCT "__at_row_id") AS n_distinct,
-                    COUNT(*) FILTER (WHERE "__at_row_id" < 0) AS n_neg
-                FROM ({raw_source_sql}) AS t
-                """
-            ).fetchone()
-            assert dup_check is not None
-            n_rows, n_non_null, n_distinct, n_neg = (int(v or 0) for v in dup_check)
-            if n_non_null != n_rows:
-                raise ValueError(f"id_col '{id_col}' contains NULL values")
-            if n_neg > 0:
-                raise ValueError(f"id_col '{id_col}' contains negative values")
-            if n_distinct != n_rows:
-                raise ValueError(
-                    f"id_col '{id_col}' is not unique ({n_distinct} distinct values across {n_rows} rows)"
-                )
-
         q_x = q(x_col)
         q_y = q(y_col)
         finite_xy = (
@@ -874,7 +962,7 @@ def build_generic(
             f"AND isfinite(CAST({q_x} AS DOUBLE)) AND isfinite(CAST({q_y} AS DOUBLE))"
         )
 
-        # Single aggregation over raw_source_sql for counts, finite bounds, numeric stats, and distinct string counts
+        # Single-pass aggregation over raw_source_sql: counts, id_col uniqueness, bounds, numeric stats, string distincts
         numeric_payload = [
             c
             for c in payload_cols
@@ -894,6 +982,14 @@ def build_generic(
             f"MIN(CAST({q_y} AS DOUBLE)) FILTER (WHERE {finite_xy}) AS min_y",
             f"MAX(CAST({q_y} AS DOUBLE)) FILTER (WHERE {finite_xy}) AS max_y",
         ]
+        if id_col is not None:
+            agg_items.extend(
+                [
+                    'COUNT("__at_row_id") AS id_non_null',
+                    'COUNT(DISTINCT "__at_row_id") AS id_distinct',
+                    'COUNT(*) FILTER (WHERE "__at_row_id" < 0) AS id_neg',
+                ]
+            )
         for col in numeric_payload:
             qc = q(col)
             agg_items.append(
@@ -921,6 +1017,21 @@ def build_generic(
 
         input_rows = int(agg_row[0] or 0)
         valid_rows = int(agg_row[1] or 0)
+        cursor = 6
+        if id_col is not None:
+            id_non_null = int(agg_row[cursor] or 0)
+            id_distinct = int(agg_row[cursor + 1] or 0)
+            id_neg = int(agg_row[cursor + 2] or 0)
+            cursor += 3
+            if id_non_null != input_rows:
+                raise ValueError(f"id_col '{id_col}' contains NULL values")
+            if id_neg > 0:
+                raise ValueError(f"id_col '{id_col}' contains negative values")
+            if id_distinct != input_rows:
+                raise ValueError(
+                    f"id_col '{id_col}' is not unique ({id_distinct} distinct values across {input_rows} rows)"
+                )
+
         if valid_rows == 0:
             raise ValueError("Input Parquet contains 0 rows with finite (x, y) coordinates")
         dropped_rows = input_rows - valid_rows
@@ -940,7 +1051,6 @@ def build_generic(
         }
 
         stats_dict: dict[str, dict[str, Any]] = {}
-        cursor = 6
         for col in numeric_payload:
             rmin, rmax, rnull = agg_row[cursor], agg_row[cursor + 1], agg_row[cursor + 2]
             cursor += 3
@@ -952,6 +1062,7 @@ def build_generic(
             }
 
         categorical_columns: dict[str, list[str]] = {}
+        dropped_columns: list[str] = []
         for col in string_payload:
             dist_cnt = int(agg_row[cursor] or 0)
             null_cnt = int(agg_row[cursor + 1] or 0)
@@ -973,12 +1084,29 @@ def build_generic(
                     "categories": vals,
                     "null_count": null_cnt,
                 }
+            elif dist_cnt > int(max_categories):
+                # D7a: drop unrequested high-cardinality free-text columns by default unless named in columns=
+                explicitly_requested = (
+                    explicit_cols_set is not None and col in explicit_cols_set
+                ) or (col == sort_col)
+                if not explicitly_requested:
+                    payload_cols = [c for c in payload_cols if c != col]
+                    dropped_columns.append(col)
+                    print(
+                        f"[ArrowTiles] Dropping high-cardinality string column '{col}' "
+                        f"({dist_cnt:,} distinct values > max_categories={max_categories}); "
+                        f"pass --columns to retain.",
+                        flush=True,
+                    )
 
-        # Default view hints (cleanly separated under "view")
         default_visual_field = (
             sort_col
             if (sort_col is not None and sort_col in payload_cols)
-            else (numeric_payload[0] if numeric_payload else (payload_cols[0] if payload_cols else "x_u16"))
+            else (
+                numeric_payload[0]
+                if numeric_payload
+                else (payload_cols[0] if payload_cols else "x_u16")
+            )
         )
         field_stats = stats_dict.get(default_visual_field, {})
         c_min = float(field_stats.get("min", 0.0))
@@ -1017,9 +1145,8 @@ def build_generic(
             ):
                 if vk in parsed_cfg:
                     view_dict[vk] = parsed_cfg[vk]
-            extra_custom_json = json.dumps(parsed_cfg, allow_nan=False)
+            extra_custom_json = json.dumps(parsed_cfg, allow_nan=False, sort_keys=True)
 
-        # Top-down Y normalization: y_norm = (max_y - y) / span_y (0.0 = max_y/top, 1.0 = min_y/bottom)
         retained_selects = ['"__at_row_id" AS "row_id"', *(q(col) for col in payload_cols)]
 
         generic_query = f"""
@@ -1052,7 +1179,11 @@ def build_generic(
             bounds=bounds_dict,
             stats=stats_dict,
             view=view_dict,
+            dropped_columns=dropped_columns,
             pre_dropped_rows=dropped_rows,
+            _prevalidated_counts=(valid_rows, dropped_rows),
+            _source_fingerprint=source_fp,
+            _pass1_only=_pass1_only,
         )
 
 
@@ -1068,6 +1199,7 @@ def build_gaia(
     temp_dir: str | os.PathLike[str] | None = None,
     threads: int | None = None,
     show_progress: bool = True,
+    _pass1_only: bool = False,
 ) -> dict[str, Any]:
     """Build a spec-compliant v0.1 Gaia Hammer-projection .arrowtiles archive."""
     hammer_half_w = 2.0 * math.sqrt(2.0)  # 2.8284271247461903
@@ -1082,9 +1214,14 @@ def build_gaia(
         assert builder.con is not None
         con = builder.con
 
-        _sorted_paths, _meta_rows, files_sql = _prepare_parquet_files_and_offsets(
+        sorted_paths, _meta_rows, files_sql = _prepare_parquet_files_and_offsets(
             con, input_parquet, row_limit=row_limit
         )
+        source_fp = {
+            "preset": "gaia",
+            "files": _compute_files_fingerprint(sorted_paths),
+            "row_limit": int(row_limit) if row_limit is not None else None,
+        }
 
         limit_clause = (
             f'ORDER BY "row_id" ASC LIMIT {int(row_limit)}'
@@ -1113,19 +1250,53 @@ def build_gaia(
             "ra IS NOT NULL AND dec IS NOT NULL "
             "AND isfinite(CAST(ra AS DOUBLE)) AND isfinite(CAST(dec AS DOUBLE))"
         )
-        cnt_row = con.execute(
-            f"""
-            SELECT
-                COUNT(*) AS total_in,
-                COUNT(*) FILTER (WHERE {finite_ra_dec}) AS valid_in
-            FROM ({raw_gaia_sql}) AS g
-            """
+
+        # Single-pass preflight for row counts + all 7 Gaia float column stats
+        gaia_col_map = [
+            ("abs_m", "magnitude"),
+            ("bp_rp", "bv"),
+            ("parallax", "parallax"),
+            ("pmra", "pmra"),
+            ("pmdec", "pmdec"),
+            ("radial_velocity", "radial_velocity"),
+            ("teff_gspphot", "teff_gspphot"),
+        ]
+        gaia_aggs = [
+            "COUNT(*) AS total_in",
+            f"COUNT(*) FILTER (WHERE {finite_ra_dec}) AS valid_in",
+        ]
+        for _out_name, src_name in gaia_col_map:
+            f_expr = f"CAST({src_name} AS FLOAT)"
+            gaia_aggs.append(
+                f"MIN(CAST({f_expr} AS DOUBLE)) FILTER (WHERE {finite_ra_dec} AND {src_name} IS NOT NULL AND isfinite(CAST({f_expr} AS DOUBLE)))"
+            )
+            gaia_aggs.append(
+                f"MAX(CAST({f_expr} AS DOUBLE)) FILTER (WHERE {finite_ra_dec} AND {src_name} IS NOT NULL AND isfinite(CAST({f_expr} AS DOUBLE)))"
+            )
+            gaia_aggs.append(
+                f"COUNT(*) FILTER (WHERE {finite_ra_dec} AND {src_name} IS NULL)"
+            )
+
+        preflight_row = con.execute(
+            f"SELECT {', '.join(gaia_aggs)} FROM ({raw_gaia_sql}) AS g"
         ).fetchone()
-        assert cnt_row is not None
-        total_in, valid_in = int(cnt_row[0] or 0), int(cnt_row[1] or 0)
+        assert preflight_row is not None
+        total_in, valid_in = int(preflight_row[0] or 0), int(preflight_row[1] or 0)
         if valid_in == 0:
             raise ValueError("Gaia input contains 0 rows with finite (ra, dec)")
         dropped_rows = total_in - valid_in
+
+        gaia_stats: dict[str, dict[str, Any]] = {}
+        g_cur = 2
+        for out_name, _src_name in gaia_col_map:
+            rmin, rmax, rnull = preflight_row[g_cur], preflight_row[g_cur + 1], preflight_row[g_cur + 2]
+            g_cur += 3
+            gaia_stats[out_name] = {
+                "type": "numeric",
+                "min": float(rmin) if rmin is not None and math.isfinite(float(rmin)) else 0.0,
+                "max": float(rmax) if rmax is not None and math.isfinite(float(rmax)) else 0.0,
+                "null_count": int(rnull or 0),
+            }
 
         gaia_query = f"""
             WITH raw_data AS (
@@ -1202,7 +1373,7 @@ def build_gaia(
             "preserveAspect": True,
         }
 
-        res = builder.build(
+        return builder.build(
             input_query=gaia_query,
             output_path=output_path,
             sort_col="abs_m",
@@ -1215,8 +1386,11 @@ def build_gaia(
             id_col="row_id",
             resume=resume,
             bounds=bounds_dict,
+            stats=gaia_stats,
             view=gaia_view,
+            dropped_columns=[],
             pre_dropped_rows=dropped_rows,
+            _prevalidated_counts=(valid_in, dropped_rows),
+            _source_fingerprint=source_fp,
+            _pass1_only=_pass1_only,
         )
-        # ensure priority metadata reflects column abs_m
-        return res

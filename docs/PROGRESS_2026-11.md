@@ -283,3 +283,45 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
   1. **⛔ `D7a` (Free-text columns in `build_generic`):** Confirm dropping string columns whose distinct count exceeds `max_categories` (`4,096`) by default (with a clear diagnostic log line) unless explicitly named in `columns=` / `--columns`?
   2. **Legacy `lmsys_full.arrowtiles` vs. `v0.1` LMSys rebuild:** Keep `public/lmsys_full.arrowtiles` untouched in place (while `vite.config.ts` serves explicit ranges up to `64 MiB` and returns `413` above cap), or also build a clean `v0.1` `lmsys_v01.arrowtiles` alongside it without raw chat `content`?
   3. **Go-ahead for Phase 2:** Ready to start **Phase 2**?
+
+
+## 2026-11-19 — Phase 2 (finish): Deterministic 2-stage bucketer, single-pass preflight, `D7a` `dropped_columns`, full `--resume` fingerprint, 100M Gaia benchmark & 2.84M LMSys SHA-256 verification
+
+- **Done:**
+  1. **Owner Decisions Locked (`D7a` & Range/Tile Caps):**
+     - `D7a`: Drop high-cardinality string columns (`distinct > max_categories`, default `4,096`) by default unless explicitly listed in `columns=` / `--columns`, emit a clear log line, and record `"dropped_columns": [...]` in metadata (added to `SPEC.md` & `RESERVED_METADATA_KEYS`).
+     - Tile-size & range alignment: Warn at `> 16 MiB` and error at `> 64 MiB` on `v0.1` in `validator.py` (updated `SPEC.md` §2.5 & §5.2 `z <= 6` with `z < nominal_max_zoom`); in `vite.config.ts`, keep `16 MiB` cap on open-ended `bytes=start-`, serve explicit `bytes=start-end` up to `64 MiB`, and return `413 Payload Too Large` above `64 MiB` (never silently truncating).
+  2. **Deterministic Zero-Atomic 2-Stage Batch Bucketer (`arrowtiles-engine/src/lib.rs`, `Cargo.toml`):**
+     - Removed `dashmap` and all atomic contention in `run_bucketer`: Stage A computes stateless `(ix_20, iy_20, h_20)` in parallel via Rayon; Stage B claims `Vec<u64>` (`coarse_bitsets`), `Vec<u32>` (`coarse_counts`, `mid_counts`), and `HashMap<u64, u32>` (`deep_counts`) sequentially in strict `(priority_key, row_id ASC)` order, writing directly into Arrow scalar buffers.
+  3. **Single-Pass SQL Preflight & Full SHA-256 `--resume` Fingerprint (`arrowtiles/builder.py`):**
+     - Eliminated the duplicate `COUNT(*)` / stats scan across `build_generic`, `build_gaia`, and direct `ArrowTilesBuilder.build()` calls.
+     - Upgraded `partitions/manifest.json` (`arrowtiles-partitions-v2`) to hash the resolved input file list (`path`, `size`, `mtime_ns`) + every build setting (`nominal_max_zoom`, `tile_capacity`, `max_tile_rows`, `sampling`, `grid_size`, `priority`, `id_col`, `retained_columns`, `categorical_columns`, `dropped_columns`, `allow_oversize_leaves`), invalidating stale partitions automatically on any mismatch.
+     - Enforced `sort_keys=True` on all JSON metadata for byte-for-byte deterministic output.
+  4. **Validator Category-Code Bounds & Worker `Type.Bool` Support (`validator.py`, `pmtiles.worker.ts`):**
+     - Added per-tile `0 <= code < len(categories)` check on categorical columns and `dropped_columns` schema-absence check in `validator.py`.
+     - Added Arrow `Type.Bool` bit-unpacking in `pmtiles.worker.ts` (`getFloat32Col`) so boolean columns on full LMSys decode accurately to `0.0` / `1.0` (`NaN` for nulls).
+  5. **Added Phase 2 Determinism & Completeness Suite (`tests/test_determinism_and_completeness.py`) & Built `samples/lmsys_full_v01.arrowtiles` (`scripts/build_samples.py --include-lmsys-full`):**
+     - Covers byte-identical SHA-256 rebuilds (unique, all-tied, and seeded-random priorities in both sampling modes), strict per-cell ($z \le 6 \land z < \text{nominal\_max\_zoom}$) and per-tile descendant priority monotonicity at `nominal_max_zoom = 4` and `8` (`ASC` & `DESC`), real `resume=True` byte-identical output + stale-manifest invalidation, `D7a` free-text drop + `columns=` opt-in, and out-of-range category code rejection.
+
+- **Evidence:**
+  - **100,000,000-Row Gaia Pass 1 Throughput Benchmark (`s3_cache/batch_000..002.parquet`, pre-sorted 100M stream -> `run_bucketer`; temp dir deleted after run):**
+    - Phase 1 Atomic Bucketer (`25a1a93`): **`75.503 s`** (`1.324 M rows/s`, `actual_max_z = 8`).
+    - Phase 2 Deterministic 2-Stage Bucketer: **`56.394 s`** (`1.773 M rows/s`, `actual_max_z = 8`) — **25.3% faster (`+33.9%` higher throughput)** than the atomic bucketer while eliminating nondeterminism completely.
+  - **Full `2,835,490`-Row LMSys `v0.1` Double-Build & Validation (`samples/lmsys_full_v01.arrowtiles`, `public/lmsys_full.arrowtiles` untouched):**
+    - `D7a` automatically dropped `"conversation_id"` (`766,507` distinct) and `"content"` (`2,292,301` distinct), shrinking the archive from `841.5 MB` (legacy `v0.0`) to **`291,047,532` bytes (`277.6 MiB`)** and reducing `max_compressed_tile_bytes` from `25.15 MiB` to **`8,195,007` B (`7.82 MiB` at `(3, 3, 4)`)**.
+    - `validate`: `ok: true`, `10,917` tiles, `2,835,490` rows, `zoom = 0..7` (`header = 7`), `warnings: []`, `errors: []`.
+    - Independent 2nd build SHA-256 match: both builds produced **`552f70129e3a53497acb11b59ae2ebbaf12f1c1221d303d1b70596c36b5dcd45`** (exact byte-for-byte match across all `2,835,490` rows).
+  - **Writer `pytest` Suite:**
+    - Command: `& "D:\exploratory\duckdb-extension\duckdb-arrowtiles\.venv\Scripts\python.exe" -m pytest -v -rs -p no:cacheprovider`
+    - Output: **`44 passed, 1 skipped in 8.29s`**.
+  - **Viewer TypeScript, Production Build & Dev Server `16 MiB` / `64 MiB` / `413` Verification (`127.0.0.1:5199`):**
+    - `npx tsc --noEmit` & `npm run build`: `exit code 0`.
+    - Open-ended `Range: bytes=0-` on `gaia_full.arrowtiles`: `206 Partial Content`, `len = 16,777,216` (`bytes 0-16777215/31016634401`).
+    - Explicit `25.15 MiB` `Range: bytes=17791-26384857` on `lmsys_full.arrowtiles` (tile `3/4/4`): `206 Partial Content`, `len = 26,367,067` (served in full, zero truncation).
+    - Explicit `70 MiB` `Range: bytes=0-73400320` on `gaia_full.arrowtiles`: **`413 Payload Too Large`** (`Payload Too Large: Explicit byte range exceeds 64 MiB limit`).
+
+- **Not done / failed:**
+  - **`git push`:** Not run (holding local commits on `revival/2026-11-wip` unless explicitly requested per `⛔` guardrail).
+
+- **Questions for owner (before Phase 3):**
+  1. **Phase 2 Review:** Please review the Phase 2 commits, the 100M-row Gaia benchmark (`56.39s` vs. `75.50s`), and the byte-identical 2.84M-row `lmsys_full_v01` verification. Ready to proceed to **Phase 3 (Explicit Priority & Sampling — SplitMix64 random default, `--preset gaia` with `phot_g_mean_mag`, HUD priority/sampling display, and visual `⛔ D7` `even_coverage` vs. `proportional` comparison on LMSys)**?

@@ -125,10 +125,11 @@ flowchart TD
 3. **Single-Pass SQL Preflight & Full `--resume` Fingerprint:**
    - Eliminate the duplicate `COUNT(*)` scan between `build_generic`/`build_gaia` and `ArrowTilesBuilder.build()` so input files are scanned once during preflight.
    - Record a SHA-256 fingerprint of the resolved input file list (`path`, `size`, `mtime_ns`) + every build setting (`nominal_max_zoom`, `tile_capacity`, `max_tile_rows`, `sampling`, `grid_size`, `priority`, `columns`, `keep_source_xy`, `row_limit`, `allow_oversize_leaves`) in `partitions/manifest.json`, rejecting stale partitions when any input or setting changes, and add an explicit `resume=True` integration test (including stale-manifest rejection).
-4. **Strict `v0.1` Tile-Size & Category-Code Validation + Free-Text Policy (`⛔ D7a`):**
-   - Make compressed tiles `> 16 MiB` (`16,777,216` bytes) a **validation error** for `v0.1` archives in `validator.py` (keeping warning-only for legacy `v0.0`), and verify `max(col) < len(categories)` on categorical columns.
-   - Per owner decision `⛔ D7a`, drop high-cardinality free-text columns (`distinct > max_categories`, default `4,096`) by default in `build_generic` unless explicitly named in `columns=` / `--columns`, emitting a clear diagnostic log line.
+4. **Strict `v0.1` Tile-Size & Category-Code Validation + Free-Text Policy (`D7a` Locked):**
+   - Warn at `> 16 MiB` (`16,777,216` bytes) and **fail validation (`ERROR`) at `> 64 MiB`** (`67,108,864` bytes) for `v0.1` archives in `validator.py` (keeping warning-only for legacy `v0.0`), and verify `0 <= code < len(categories)` on categorical columns.
+   - Per owner decision `D7a`, drop high-cardinality free-text columns (`distinct > max_categories`, default `4,096`) by default in `build_generic` unless explicitly named in `columns=` / `--columns`, emitting a diagnostic log line and recording `"dropped_columns": [...]` in metadata.
    - In `vite.config.ts`, keep the `16 MiB` cap on open-ended `Range: bytes=start-` (`!match[2]`), serve explicit bounded `Range: bytes=start-end` requests up to `64 MiB`, and return **`413 Payload Too Large`** (never silently truncating a `206` slice) if an explicit range exceeds `64 MiB`.
+   - Build gitignored `samples/lmsys_full_v01.arrowtiles` (`2.84M` rows) at the end of Phase 2 (keeping `public/lmsys_full.arrowtiles` untouched) and verify byte-identical SHA-256 across two full builds.
 5. Benchmark Pass 1 throughput delta on a **100M-row Gaia subset** (`⛔` pause if `> 20%` slower).
 6. Run `tests/test_determinism_and_completeness.py` with **byte-identical SHA-256 output across repeated builds** as a hard pass/fail gate (both unique and tied priorities), alongside `sum(rows) == input - dropped`, unique `row_id`, and the per-cell ($Z \le 6$ `even_coverage`) / per-tile priority contract.
 

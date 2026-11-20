@@ -31,7 +31,7 @@ The PMTiles JSON metadata object **MUST** include:
 2. **Tile Payload:** Each tile's uncompressed payload **MUST** consist of a single Arrow IPC **`RecordBatch` message** (`BodyCompression = None`, little-endian, 8-byte aligned buffers) followed by the 8-byte `EOS` marker (`0xFFFFFFFF 0x00000000`), starting with continuation bytes `0xFFFFFFFF`. Empty (`0`-row) tiles **MUST NOT** be written.
 3. **Stream Reconstruction:** Concatenating `base64_decode(arrow_schema) || zstd_decompress(tile_bytes)` yields a complete, valid Arrow IPC Stream containing one `RecordBatch`.
 4. **No Dictionary Messages:** `DictionaryBatch` IPC messages and Arrow `DictionaryType` columns **MUST NOT** appear in `v0.1`. Categorical columns **MUST** be stored as unsigned integer codes (`UInt8` for $1 \dots 256$ categories; `UInt16` for $257 \dots 65,535$ categories) with missing values encoded exclusively in the Arrow validity bitmap (`nullBitmap`) and category labels stored once in `stats[col].categories`.
-5. **Compressed Tile Size Guidance:** Individual compressed tiles **SHOULD** remain below `16 MiB` (`16,777,216` bytes) for bounded HTTP `206` range servers; validators **MUST** report the largest compressed tile size (`max_compressed_tile_bytes`) and warn/flag if any tile exceeds `16 MiB`.
+5. **Compressed Tile Size Limits:** Individual compressed tiles **SHOULD** remain below `16 MiB` (`16,777,216` bytes, validator warning) and **MUST NOT** exceed `64 MiB` (`67,108,864` bytes, validator error in `v0.1`; warning in `v0.0` compatibility mode). Validators **MUST** report `max_compressed_tile_bytes`.
 
 ---
 
@@ -58,8 +58,9 @@ The PMTiles JSON metadata object **MUST** include:
    - If a source identifier column is specified (`--id-col`), it **MUST** be unique and non-null `UInt64` (or lossless non-negative integer cast to `UInt64`).
    - For Parquet file/glob inputs without `--id-col`, the writer sorts resolved file paths lexicographically, computes contiguous per-file row offsets `file_base_offset` from Parquet metadata, and assigns `row_id = file_base_offset + file_row_number` (`0 .. input_rows - 1`).
    - Custom SQL query callers (`build(input_query=...)`) **MUST** supply an explicit deterministic `id_col`.
-2. **Completeness & Non-Finite Coordinates:** Rows where source `x` or `y` is `NULL`, `NaN`, or `±Infinity` **MUST** be excluded and counted in metadata `"dropped_rows"` ($\ge 0$). Every remaining valid row (`"total_rows"`, $\ge 0$) **MUST** appear in **exactly one** tile:
+2. **Completeness, Non-Finite Coordinates & Dropped Columns:** Rows where source `x` or `y` is `NULL`, `NaN`, or `±Infinity` **MUST** be excluded and counted in metadata `"dropped_rows"` ($\ge 0$). Every remaining valid row (`"total_rows"`, $\ge 0$) **MUST** appear in **exactly one** tile:
    $$\sum_{t \in \text{tiles}} \text{num\_rows}(t) = \text{total\_rows}, \qquad \text{total\_rows} + \text{dropped\_rows} = \text{input\_rows}.$$
+   Writers that automatically omit unrequested high-cardinality string columns (`distinct > max_categories`) **MUST** record their names in metadata `"dropped_columns": ["...", ...]` (`[]` when none were dropped).
 
 ---
 
@@ -70,7 +71,7 @@ Metadata **MUST** record `"nominal_max_zoom"` (`u8`), `"tile_capacity"` (`u32`, 
 1. **Leaf Spillover ($z \ge \text{nominal\_max\_zoom}$):** Tiles at `nominal_max_zoom` accept up to `max_tile_rows` points; overflow rows spill into finer child tiles up to $z = 20$. If a $z = 20$ tile still exceeds the configured `max_tile_rows` (exact-duplicate coordinates), the writer **MUST** fail with the overflow count unless `--allow-oversize-leaves` is enabled, in which case metadata `"max_tile_rows"` records the actual maximum row count across all written tiles.
 2. **Sampling Modes & Priority Invariant:** Let valid rows be strictly ordered by `(priority_key, row_id ASC)` from highest to lowest priority; rows within every tile **MUST** preserve this order:
    - **`"proportional"`:** Every zoom $z < \text{nominal\_max\_zoom}$ admits up to `tile_capacity` rows per tile ($z \ge \text{nominal\_max\_zoom}$ admits up to `max_tile_rows`). *Contract:* For every full tile $T$ at zoom $z$, every row in $T$ has higher priority than every row in any descendant tile $T' \subset T$ ($z' > z$).
-   - **`"even_coverage"`:** Zoom levels $z \le 6$ partition each tile into a $G \times G$ sub-grid (`"grid_size": G` in metadata, $16 \le G \le 512$) admitting **at most 1 row per `(z, tile, gx, gy)` cell**; levels $7 \le z < \text{nominal\_max\_zoom}$ use `tile_capacity`, and $z \ge \text{nominal\_max\_zoom}$ use `max_tile_rows`. *Contract:* At $z \le 6$, the row in cell $(z, T, g_x, g_y)$ has higher priority than every row in any descendant tile $T'$ ($z' > z$) falling within that cell; at $z \ge 7$, the per-tile contract holds.
+   - **`"even_coverage"`:** Zoom levels $z \le 6$ with $z < \text{nominal\_max\_zoom}$ partition each tile into a $G \times G$ sub-grid (`"grid_size": G` in metadata, $16 \le G \le 512$) admitting **at most 1 row per `(z, tile, gx, gy)` cell**; levels $7 \le z < \text{nominal\_max\_zoom}$ use `tile_capacity`, and $z \ge \text{nominal\_max\_zoom}$ use `max_tile_rows`. *Contract:* At $z \le 6$ with $z < \text{nominal\_max\_zoom}$, the row in cell $(z, T, g_x, g_y)$ has higher priority than every row in any descendant tile $T'$ ($z' > z$) falling within that cell; otherwise, the per-tile contract holds.
 
 ---
 
@@ -82,10 +83,10 @@ Metadata **MUST** record `"nominal_max_zoom"` (`u8`), `"tile_capacity"` (`u32`, 
 2. **Statistics (`"stats"`, `"tile_stats"`):**
    - `"stats"`: per-column map computed over **finite non-null** values only (RFC 8259 JSON; `NaN`/`Infinity` forbidden):
      - Numeric: `{"type": "numeric", "min": <f64>, "max": <f64>, "null_count": <u64>}`
-     - Categorical: `{"type": "categorical", "categories": ["...", ...], "null_count": <u64>}` (code `k` $\mapsto$ `categories[k]`).
+     - Categorical: `{"type": "categorical", "categories": ["...", ...], "null_count": <u64>}` (every non-null integer code $k$ **MUST** satisfy $0 \le k < \text{len}(\text{categories})$, mapping $k \mapsto \text{categories}[k]$).
    - `"tile_stats"`: reserved optional key in metadata JSON (`null` or omitted in `v0.1`; reserved for a compact tile-indexed min/max summary directory so tile payloads stay pure Arrow IPC).
 3. **Optional View Hints (`"view"`):** Optional metadata object (`colorField`, `colorMin`, `colorMax`, `sizeField`, `sizeMin`, `sizeMax`, `colorScale`, `preserveAspect`, `mode`). Readers **MUST NOT** require `"view"`. Viewers rendering categorical columns **MUST** treat `NULL`/`NaN` values as missing (never category `0`) and **SHOULD** provide at least a 64-color palette with deterministic wrap/hue-hashing above 64 categories.
 4. **Reserved Identifiers & Future Extensions:**
    - **Reserved Columns:** `row_id`, `x_u16`, `y_u16`, `z`, `final_tile_id`, and prefix `__at_*` (writers **MUST** reject colliding user columns unless `row_id` is passed via `--id-col`).
-   - **Reserved Metadata Keys:** `format`, `version`, `arrow_schema`, `bounds`, `priority`, `sampling`, `grid_size`, `nominal_max_zoom`, `tile_capacity`, `max_tile_rows`, `total_rows`, `dropped_rows`, `stats`, `tile_stats`, `view`, `layers`, `edges` (writers **MUST** error on unparseable custom metadata JSON or reserved-key collisions).
+   - **Reserved Metadata Keys:** `format`, `version`, `arrow_schema`, `bounds`, `priority`, `sampling`, `grid_size`, `nominal_max_zoom`, `tile_capacity`, `max_tile_rows`, `total_rows`, `dropped_rows`, `dropped_columns`, `stats`, `tile_stats`, `view`, `layers`, `edges` (writers **MUST** error on unparseable custom metadata JSON or reserved-key collisions).
    - **Reserved Future Concepts (Named Only):** `"layers"` (multi-archive auxiliary column layers) and `"edges"` (graph links).

@@ -41,7 +41,19 @@ def _find_lmsys_source() -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-def build_all_samples(output_dir: Path = DEFAULT_SAMPLES_DIR) -> dict[str, dict]:
+def _find_full_lmsys_source() -> Path | None:
+    override = os.environ.get("ARROWTILES_FULL_LMSYS_PARQUET")
+    candidate = (
+        Path(override)
+        if override
+        else WORKSPACE_PARENT / "duckdb-cosmograph-oss" / "lmsys.parquet"
+    )
+    return candidate if candidate.is_file() else None
+
+
+def build_all_samples(
+    output_dir: Path = DEFAULT_SAMPLES_DIR, *, include_lmsys_full: bool = False
+) -> dict[str, dict]:
     output_dir.mkdir(parents=True, exist_ok=True)
     results: dict[str, dict] = {}
 
@@ -147,6 +159,50 @@ def build_all_samples(output_dir: Path = DEFAULT_SAMPLES_DIR) -> dict[str, dict]
     else:
         results["lmsys_sample"] = {"skipped": True, "reason": "mock_lmsys.parquet not present"}
 
+    if include_lmsys_full:
+        full_src = _find_full_lmsys_source()
+        if full_src is not None:
+            full_out = output_dir / "lmsys_full_v01.arrowtiles"
+            duck_tmp = output_dir / "_tmp_lmsys_full"
+            try:
+                build_res = build_generic(
+                    input_parquet=full_src,
+                    output_path=full_out,
+                    x_col="x_umap",
+                    y_col="y_umap",
+                    sort_col="num_of_tokens",
+                    sort_dir="DESC",
+                    max_capacity=100_000,
+                    max_zoom=14,
+                    memory_limit="16GB",
+                    temp_dir=duck_tmp,
+                    custom_config=json.dumps(
+                        {
+                            "colorField": "model",
+                            "sizeField": "num_of_tokens",
+                            "colorScale": "viridis",
+                        }
+                    ),
+                    show_progress=False,
+                )
+            finally:
+                import shutil
+
+                shutil.rmtree(duck_tmp, ignore_errors=True)
+
+            expected_in = build_res["total_rows"] + build_res["dropped_rows"]
+            val_full = validate_file(full_out, expected_input_rows=expected_in)
+            if not val_full.ok:
+                raise RuntimeError(f"lmsys_full_v01 validation failed: {val_full.errors}")
+            results["lmsys_full_v01"] = {
+                "path": str(full_out),
+                "size_bytes": full_out.stat().st_size,
+                "dropped_columns": build_res["dropped_columns"],
+                "validation": val_full.to_dict(),
+            }
+        else:
+            results["lmsys_full_v01"] = {"skipped": True, "reason": "lmsys.parquet not present"}
+
     return results
 
 
@@ -158,8 +214,13 @@ def main() -> int:
         default=DEFAULT_SAMPLES_DIR,
         help="Directory for generated sample archives (default: ./samples)",
     )
+    parser.add_argument(
+        "--include-lmsys-full",
+        action="store_true",
+        help="Also build full 2.84M-row samples/lmsys_full_v01.arrowtiles (testing D7a free-text drop)",
+    )
     args = parser.parse_args()
-    summary = build_all_samples(args.output_dir)
+    summary = build_all_samples(args.output_dir, include_lmsys_full=args.include_lmsys_full)
     print(json.dumps(summary, indent=2))
     return 0
 
