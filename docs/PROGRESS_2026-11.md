@@ -325,3 +325,45 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
 
 - **Questions for owner (before Phase 3):**
   1. **Phase 2 Review:** Please review the Phase 2 commits, the 100M-row Gaia benchmark (`56.39s` vs. `75.50s`), and the byte-identical 2.84M-row `lmsys_full_v01` verification. Ready to proceed to **Phase 3 (Explicit Priority & Sampling — SplitMix64 random default, `--preset gaia` with `phot_g_mean_mag`, HUD priority/sampling display, and visual `⛔ D7` `even_coverage` vs. `proportional` comparison on LMSys)**?
+
+
+## 2026-11-20 — Phase 3 (finish, paused at `⛔ D7`): Portable `SplitMix64` random priority default, `--preset gaia` (`phot_g_mean_mag`), HUD priority/sampling telemetry & 2.84M LMSys `even_coverage` vs. `proportional` comparison
+
+- **Done:**
+  1. **Portable `SplitMix64` Default Priority (`docs/SPEC.md` §6.1, `arrowtiles-engine/src/lib.rs`, `arrowtiles/builder.py`):**
+     - Specified the exact unsigned 64-bit `splitmix64(row_id, seed)` mixing function in `docs/SPEC.md` §6.1 (`0x9E3779B97F4A7C15`, `0xBF58476D1CE4E5B9`, `0x94D049BB133111EB`).
+     - Replaced DuckDB's version-dependent `hash(...)` with `_duckdb_splitmix64_sql(...)` evaluated in 128-bit unsigned `UHUGEINT` with `xor(...)` and `& CAST(18446744073709551615 AS UHUGEINT)` wrapping (avoiding DuckDB SQL hex-literal, `^` exponentiation, and `UBIGINT` overflow traps), plus matching `splitmix64_py` in Python and `#[pyfunction] splitmix64_hash` in Rust.
+     - Removed `sort_col="abs_m"` default in `ArrowTilesBuilder.build(...)`: omitting `sort_col` now defaults to `{"kind": "random", "seed": 42}` everywhere.
+  2. **Explicit `--preset gaia` (`phot_g_mean_mag ASC`) & Flexible Schema (`arrowtiles/builder.py`, `arrowtiles/__main__.py`):**
+     - `build_gaia(...)` inspects input Parquet columns via `DESCRIBE` so both raw ESA Gaia DR3 names (`phot_g_mean_mag`, `bp_rp`) and local `s3_cache` names (`magnitude`, `bv`) are accepted seamlessly (falling back cleanly to `NULL::FLOAT` when optional astrophysics columns are absent).
+     - Emits canonical `phot_g_mean_mag: Float32` sorted `ASC` (`view.sizeField = "phot_g_mean_mag"`), and forwards `sampling`, `grid_size`, `allow_oversize_leaves`, and `custom_config` from `python -m arrowtiles build --preset gaia`.
+  3. **Viewer `phot_g_mean_mag` / Legacy `abs_m` Dual Support & HUD Priority/Sampling Display (`Scatterplot.ts`, `ComputeRasterizer.ts`, `main.ts`, `vite.config.ts`):**
+     - Added `scatterplot.gaiaMagField` (`'phot_g_mean_mag'` when present in schema, else `'abs_m'`) across `getActiveColumns`, `getMaterialSignature`, `createMainMaterial`, `computeSlotMagBins`, `ComputeRasterizer.render`, `gaiaFallbacks`, Sky Lenses 10 & 1, and HR Diagram `yField`.
+     - Added `#tel-pyramid` line in the viewer HUD displaying active `Priority` & `Sampling` via `.textContent` (e.g., `Priority: random (seed=42) | Sampling: even_coverage (316x316)`, `Priority: phot_g_mean_mag ASC | Sampling: even_coverage (158x158)`, or `Priority: legacy v0.0 | Sampling: legacy v0.0`).
+     - Added safe `?file=/...arrowtiles` query param + `/samples/<name>.arrowtiles` range serving from `../duckdb-arrowtiles/samples` in `vite.config.ts` so `samples/` archives can be inspected live without copying binaries into `public/`.
+  4. **Built Full `2,835,490`-Row LMSys `⛔ D7` Comparison Pair (`scripts/build_samples.py --build-d7-comparison`):**
+     - Rebuilt `samples/gaia_sample.arrowtiles` (`phot_g_mean_mag ASC`) and `samples/lmsys_sample.arrowtiles` (`random(seed=42)`), plus built `samples/lmsys_d7_even_coverage.arrowtiles` and `samples/lmsys_d7_proportional.arrowtiles` on all `2,835,490` rows of `lmsys.parquet` with `SplitMix64(seed=42)` priority (`samples/lmsys_full_v01.arrowtiles` and `public/lmsys_full.arrowtiles` kept untouched).
+
+- **Evidence:**
+  - **Writer `pytest` Suite (`48 passed, 1 skipped`):**
+    - Command: `& "D:\exploratory\duckdb-extension\duckdb-arrowtiles\.venv\Scripts\python.exe" -m pytest -v -rs -p no:cacheprovider`
+    - Output: **`48 passed, 1 skipped in 14.71s`** (includes `tests/test_phase3_priority_and_presets.py` verifying bit-exact equivalence between Rust `splitmix64_hash`, Python `splitmix64_py`, and DuckDB 1.5.3 `UHUGEINT` SQL across golden vectors, boundary `u64`/`i64` pairs, and 1,000 random 64-bit `row_id`s; exact top-25 `SplitMix64` root-tile selection; `--preset gaia` on both `(phot_g_mean_mag, bp_rp)` and `(magnitude, bv)` schemas + CLI flag forwarding; and explicit `tile_capacity` / `sampling` passthrough).
+  - **2.84M-Row LMSys `⛔ D7` Comparison Metrics (`SplitMix64(seed=42)`, `tile_capacity=100,000`):**
+    - `samples/lmsys_d7_even_coverage.arrowtiles`: `[PASS] spec=0.1`, **`298,682,719` B (`284.85 MiB`)**, SHA-256 `f77e6ab5f89573fcf8bc30c56fa1b9b1beade1d37f806147b0d457cd5dfbe64c`, **`10,768` tiles**, `zoom = 0..7`, `max_tile_rows = 79,008`, `max_compressed_tile = 8,437,095 B` (`8.05 MiB` at `(3, 3, 4)`). At `Z=2` overview: `21` tiles, `0.29M` points rendered (preserves outer islands & core color detail); at `Z=4` cluster zoom: `85` tiles, `1.61M` points rendered.
+    - `samples/lmsys_d7_proportional.arrowtiles`: `[PASS] spec=0.1`, **`292,552,296` B (`279.00 MiB`)**, SHA-256 `aa41e950d0dcf56d8c183c0acff002b6ad9a65c9a707cc96e184ab9c80fc88ee`, **`61` tiles**, `zoom = 0..4`, `max_tile_rows = 100,000`, `max_compressed_tile = 10,735,648 B` (`10.24 MiB` at `(2, 1, 2)`). At `Z=2` overview: `21` tiles, `1.25M` points rendered (true statistical density, bright saturated core, 176x fewer tiles); at `Z=4` cluster zoom: `49` tiles, `2.56M` points rendered.
+  - **Viewer TypeScript, Production Build & Live Chrome WebGPU Verification (`scratch/capture_phase3_d7.mjs`):**
+    - `npx tsc --noEmit` & `npm run build`: `exit code 0`.
+    - Live Chrome WebGPU check across `gaia_full.arrowtiles` (`legacy v0.0`, `abs_m`), `gaia_sample.arrowtiles` (`v0.1`, `phot_g_mean_mag` + HR Diagram `yField == 'phot_g_mean_mag'`), `lmsys_d7_even_coverage.arrowtiles` (`Z=2` & `Z=4`), and `lmsys_d7_proportional.arrowtiles` (`Z=2` & `Z=4`): `exit code 0`, `pageErrors: []`, `consoleErrors: []`.
+    - Screenshots saved for `⛔ D7` owner review:
+      - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase3_d7_lmsys_even_coverage_z2.png`
+      - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase3_d7_lmsys_proportional_z2.png`
+      - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase3_d7_lmsys_even_coverage_z4.png`
+      - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase3_d7_lmsys_proportional_z4.png`
+      - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase3_v01_gaia_sample_phot_g.png`
+
+- **Not done / failed:**
+  - **`git push`:** Not run (holding local commits on `revival/2026-11-wip` unless explicitly requested per `⛔` guardrail).
+
+- **Questions for owner (`⛔ D7` Stop Gate before Phase 4):**
+  1. **⛔ `D7` (Default Sampling Mode for Generic Builds):** Having compared full 2.84M-row LMSys (`SplitMix64(seed=42)`) in **`even_coverage`** (`316x316` sub-grid at `z <= 6`: preserves sparse outer islands & core color contrast at overview; `10,768` tiles, `zoom 0..7`) vs. **`proportional`** (`100,000` rows/tile: true i.i.d. statistical density & only `61` tiles / `zoom 0..4`, with brighter additive saturation in dense cores), which mode should be the default `--sampling` for generic builds (`even_coverage` vs. `proportional`), while keeping `even_coverage` on `--preset gaia`?
+  2. **Go-ahead for Phase 4:** Once `D7` is locked, ready to proceed to **Phase 4 (Parquet vs. `.arrowtiles` Benchmark across samples, full LMSys 3-of-38 & full schema, and `>= 100M` Gaia rows -> `⛔ D8, D9, D10`)**?

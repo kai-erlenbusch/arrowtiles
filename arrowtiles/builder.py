@@ -27,6 +27,32 @@ DEFAULT_RANDOM_SEED = 42
 MAX_CATEGORIES_CAP = 65_535
 DEFAULT_AUTO_MAX_CATEGORIES = 4_096
 
+SPLITMIX64_GAMMA = 11400714819323198485  # 0x9E3779B97F4A7C15
+SPLITMIX64_MUL1 = 13787848793156543929   # 0xBF58476D1CE4E5B9
+SPLITMIX64_MUL2 = 10723151780598845931   # 0x94D049BB133111EB
+MASK_U64 = 18446744073709551615          # 0xFFFFFFFFFFFFFFFF
+
+
+def splitmix64_py(row_id: int, seed: int) -> int:
+    """Portable unsigned 64-bit SplitMix64 mix over (row_id, seed) per SPEC.md §6.1."""
+    r_u64 = int(row_id) & MASK_U64
+    seed_u64 = int(seed) & MASK_U64
+    z0 = (r_u64 + seed_u64 + SPLITMIX64_GAMMA) & MASK_U64
+    z1 = ((z0 ^ (z0 >> 30)) * SPLITMIX64_MUL1) & MASK_U64
+    z2 = ((z1 ^ (z1 >> 27)) * SPLITMIX64_MUL2) & MASK_U64
+    return (z2 ^ (z2 >> 31)) & MASK_U64
+
+
+def _duckdb_splitmix64_sql(row_id_expr: str, seed: int) -> str:
+    """Render portable unsigned 64-bit SplitMix64 in DuckDB SQL using UHUGEINT wrapping arithmetic."""
+    seed_plus_gamma = ((int(seed) & MASK_U64) + SPLITMIX64_GAMMA) & MASK_U64
+    mask_sql = f"CAST({MASK_U64} AS UHUGEINT)"
+    r_u128 = f"CAST(CAST({row_id_expr} AS UBIGINT) AS UHUGEINT)"
+    z0 = f"(({r_u128} + CAST({seed_plus_gamma} AS UHUGEINT)) & {mask_sql})"
+    z1 = f"((xor({z0}, ({z0} >> 30)) * CAST({SPLITMIX64_MUL1} AS UHUGEINT)) & {mask_sql})"
+    z2 = f"((xor({z1}, ({z1} >> 27)) * CAST({SPLITMIX64_MUL2} AS UHUGEINT)) & {mask_sql})"
+    return f"CAST(xor({z2}, ({z2} >> 31)) AS UBIGINT)"
+
 RESERVED_COLUMN_NAMES = frozenset({"row_id", "x_u16", "y_u16", "z", "final_tile_id"})
 
 RESERVED_METADATA_KEYS = frozenset(
@@ -295,7 +321,7 @@ class ArrowTilesBuilder:
         self,
         input_query: str,
         output_path: str | os.PathLike[str],
-        sort_col: str | None = "abs_m",
+        sort_col: str | None = None,
         x_col: str = "x_norm",
         y_col: str = "y_norm",
         sort_dir: str = "ASC",
@@ -452,9 +478,7 @@ class ArrowTilesBuilder:
             }
             order_dir_pass = f"{sort_dir_clean} NULLS LAST"
         else:
-            sort_key_expr = (
-                f"hash(CAST(src.{q_id} AS UBIGINT), CAST({int(seed)} AS BIGINT))"
-            )
+            sort_key_expr = _duckdb_splitmix64_sql(f"src.{q_id}", int(seed))
             priority_meta = {"kind": "random", "seed": int(seed)}
             order_dir_pass = "ASC NULLS LAST"
 
@@ -1194,6 +1218,10 @@ def build_gaia(
     max_capacity: int = DEFAULT_TILE_CAPACITY,
     max_zoom: int = DEFAULT_NOMINAL_MAX_ZOOM,
     max_tile_rows: int | None = None,
+    sampling: str = "even_coverage",
+    grid_size: int | None = None,
+    allow_oversize_leaves: bool = False,
+    custom_config: str | None = None,
     resume: bool = False,
     memory_limit: str = "40GB",
     temp_dir: str | os.PathLike[str] | None = None,
@@ -1201,7 +1229,7 @@ def build_gaia(
     show_progress: bool = True,
     _pass1_only: bool = False,
 ) -> dict[str, Any]:
-    """Build a spec-compliant v0.1 Gaia Hammer-projection .arrowtiles archive."""
+    """Build a spec-compliant v0.1 Gaia Hammer-projection .arrowtiles archive (`phot_g_mean_mag ASC`)."""
     hammer_half_w = 2.0 * math.sqrt(2.0)  # 2.8284271247461903
     hammer_half_h = math.sqrt(2.0)  # 1.4142135623730951
 
@@ -1213,6 +1241,7 @@ def build_gaia(
     ) as builder:
         assert builder.con is not None
         con = builder.con
+        q = builder._quote_ident
 
         sorted_paths, _meta_rows, files_sql = _prepare_parquet_files_and_offsets(
             con, input_parquet, row_limit=row_limit
@@ -1223,6 +1252,43 @@ def build_gaia(
             "row_limit": int(row_limit) if row_limit is not None else None,
         }
 
+        # Inspect input Parquet columns so both raw ESA Gaia DR3 names (phot_g_mean_mag, bp_rp)
+        # and local s3_cache names (magnitude, bv) are accepted seamlessly.
+        src_desc = con.execute(
+            f"DESCRIBE SELECT * FROM read_parquet({files_sql})"
+        ).fetchall()
+        src_cols = {str(r[0]) for r in src_desc}
+
+        if "ra" not in src_cols or "dec" not in src_cols:
+            raise ValueError(
+                f"Gaia preset requires 'ra' and 'dec' columns in input Parquet; found {sorted(src_cols)}"
+            )
+
+        if "phot_g_mean_mag" in src_cols:
+            mag_src_expr = f"src.{q('phot_g_mean_mag')}"
+        elif "magnitude" in src_cols:
+            mag_src_expr = f"src.{q('magnitude')}"
+        elif "abs_m" in src_cols:
+            mag_src_expr = f"src.{q('abs_m')}"
+        else:
+            raise ValueError(
+                "Gaia preset requires a brightness column ('phot_g_mean_mag' or 'magnitude') "
+                f"in input Parquet; found {sorted(src_cols)}"
+            )
+
+        if "bp_rp" in src_cols:
+            bprp_src_expr = f"src.{q('bp_rp')}"
+        elif "bv" in src_cols:
+            bprp_src_expr = f"src.{q('bv')}"
+        else:
+            bprp_src_expr = "CAST(NULL AS FLOAT)"
+
+        opt_exprs: dict[str, str] = {}
+        for opt_col in ("parallax", "pmra", "pmdec", "radial_velocity", "teff_gspphot"):
+            opt_exprs[opt_col] = (
+                f"src.{q(opt_col)}" if opt_col in src_cols else "CAST(NULL AS FLOAT)"
+            )
+
         limit_clause = (
             f'ORDER BY "row_id" ASC LIMIT {int(row_limit)}'
             if row_limit is not None
@@ -1231,15 +1297,15 @@ def build_gaia(
         raw_gaia_sql = f"""
             SELECT
                 CAST(off.base_offset + src.file_row_number AS UBIGINT) AS "row_id",
-                src.ra,
-                src.dec,
-                src.magnitude,
-                src.bv,
-                src.parallax,
-                src.pmra,
-                src.pmdec,
-                src.radial_velocity,
-                src.teff_gspphot
+                src.{q('ra')} AS ra,
+                src.{q('dec')} AS dec,
+                {mag_src_expr} AS phot_g_mean_mag,
+                {bprp_src_expr} AS bp_rp,
+                {opt_exprs['parallax']} AS parallax,
+                {opt_exprs['pmra']} AS pmra,
+                {opt_exprs['pmdec']} AS pmdec,
+                {opt_exprs['radial_velocity']} AS radial_velocity,
+                {opt_exprs['teff_gspphot']} AS teff_gspphot
             FROM read_parquet({files_sql}, filename=true, file_row_number=true) AS src
             INNER JOIN "__at_file_offsets" AS off
                 ON replace(src.filename, '\\', '/') = off.file_path
@@ -1252,29 +1318,29 @@ def build_gaia(
         )
 
         # Single-pass preflight for row counts + all 7 Gaia float column stats
-        gaia_col_map = [
-            ("abs_m", "magnitude"),
-            ("bp_rp", "bv"),
-            ("parallax", "parallax"),
-            ("pmra", "pmra"),
-            ("pmdec", "pmdec"),
-            ("radial_velocity", "radial_velocity"),
-            ("teff_gspphot", "teff_gspphot"),
+        gaia_out_cols = [
+            "phot_g_mean_mag",
+            "bp_rp",
+            "parallax",
+            "pmra",
+            "pmdec",
+            "radial_velocity",
+            "teff_gspphot",
         ]
         gaia_aggs = [
             "COUNT(*) AS total_in",
             f"COUNT(*) FILTER (WHERE {finite_ra_dec}) AS valid_in",
         ]
-        for _out_name, src_name in gaia_col_map:
-            f_expr = f"CAST({src_name} AS FLOAT)"
+        for out_name in gaia_out_cols:
+            f_expr = f"CAST({out_name} AS FLOAT)"
             gaia_aggs.append(
-                f"MIN(CAST({f_expr} AS DOUBLE)) FILTER (WHERE {finite_ra_dec} AND {src_name} IS NOT NULL AND isfinite(CAST({f_expr} AS DOUBLE)))"
+                f"MIN(CAST({f_expr} AS DOUBLE)) FILTER (WHERE {finite_ra_dec} AND {out_name} IS NOT NULL AND isfinite(CAST({f_expr} AS DOUBLE)))"
             )
             gaia_aggs.append(
-                f"MAX(CAST({f_expr} AS DOUBLE)) FILTER (WHERE {finite_ra_dec} AND {src_name} IS NOT NULL AND isfinite(CAST({f_expr} AS DOUBLE)))"
+                f"MAX(CAST({f_expr} AS DOUBLE)) FILTER (WHERE {finite_ra_dec} AND {out_name} IS NOT NULL AND isfinite(CAST({f_expr} AS DOUBLE)))"
             )
             gaia_aggs.append(
-                f"COUNT(*) FILTER (WHERE {finite_ra_dec} AND {src_name} IS NULL)"
+                f"COUNT(*) FILTER (WHERE {finite_ra_dec} AND {out_name} IS NULL)"
             )
 
         preflight_row = con.execute(
@@ -1288,7 +1354,7 @@ def build_gaia(
 
         gaia_stats: dict[str, dict[str, Any]] = {}
         g_cur = 2
-        for out_name, _src_name in gaia_col_map:
+        for out_name in gaia_out_cols:
             rmin, rmax, rnull = preflight_row[g_cur], preflight_row[g_cur + 1], preflight_row[g_cur + 2]
             g_cur += 3
             gaia_stats[out_name] = {
@@ -1302,7 +1368,7 @@ def build_gaia(
             WITH raw_data AS (
                 SELECT
                     "row_id",
-                    ra, dec, magnitude, bv, parallax, pmra, pmdec, radial_velocity, teff_gspphot,
+                    ra, dec, phot_g_mean_mag, bp_rp, parallax, pmra, pmdec, radial_velocity, teff_gspphot,
                     RADIANS(CAST(ra AS DOUBLE)) AS ra_rad,
                     RADIANS(CAST(dec AS DOUBLE)) AS dec_rad,
                     RADIANS(192.85948) AS a_g,
@@ -1332,8 +1398,8 @@ def build_gaia(
                     "row_id",
                     ((-2.0 * sqrt(2.0) * cos(b_rad) * sin(l_rad / 2.0)) / GREATEST(sqrt(1.0 + cos(b_rad) * cos(l_rad / 2.0)), 1e-12)) AS x_h,
                     ((sqrt(2.0) * sin(b_rad)) / GREATEST(sqrt(1.0 + cos(b_rad) * cos(l_rad / 2.0)), 1e-12)) AS y_h,
-                    CAST(magnitude AS FLOAT) AS abs_m,
-                    CAST(bv AS FLOAT) AS bp_rp,
+                    CAST(phot_g_mean_mag AS FLOAT) AS phot_g_mean_mag,
+                    CAST(bp_rp AS FLOAT) AS bp_rp,
                     CAST(parallax AS FLOAT) AS parallax,
                     CAST(pmra AS FLOAT) AS pmra,
                     CAST(pmdec AS FLOAT) AS pmdec,
@@ -1345,7 +1411,7 @@ def build_gaia(
                 "row_id",
                 LEAST(GREATEST((x_h + {hammer_half_w!r}) / {2.0 * hammer_half_w!r}, 0.0), 1.0) AS "__at_in_x",
                 LEAST(GREATEST(({hammer_half_h!r} - y_h) / {2.0 * hammer_half_h!r}, 0.0), 1.0) AS "__at_in_y",
-                abs_m,
+                phot_g_mean_mag,
                 bp_rp,
                 parallax,
                 pmra,
@@ -1361,30 +1427,57 @@ def build_gaia(
             "min_y": -hammer_half_h,
             "max_y": hammer_half_h,
         }
-        gaia_view = {
+        gaia_view: dict[str, Any] = {
             "mode": "Gaia Baseline",
             "colorField": "bp_rp",
             "colorMin": -0.5,
             "colorMax": 4.0,
-            "sizeField": "abs_m",
+            "sizeField": "phot_g_mean_mag",
             "sizeMin": 0.0,
             "sizeMax": 20.0,
             "colorScale": "viridis",
             "preserveAspect": True,
         }
 
+        extra_custom_json: str | None = None
+        if custom_config is not None and custom_config.strip():
+            parsed_cfg = parse_strict_json_object(custom_config, label="custom_config")
+            colliding = sorted(RESERVED_METADATA_KEYS.intersection(parsed_cfg.keys()))
+            if colliding:
+                raise ValueError(
+                    f"custom_config contains reserved ArrowTiles key(s): {', '.join(colliding)}"
+                )
+            for vk in (
+                "mode",
+                "colorField",
+                "colorMin",
+                "colorMax",
+                "sizeField",
+                "sizeMin",
+                "sizeMax",
+                "colorScale",
+                "preserveAspect",
+            ):
+                if vk in parsed_cfg:
+                    gaia_view[vk] = parsed_cfg[vk]
+            extra_custom_json = json.dumps(parsed_cfg, allow_nan=False, sort_keys=True)
+
         return builder.build(
             input_query=gaia_query,
             output_path=output_path,
-            sort_col="abs_m",
+            sort_col="phot_g_mean_mag",
             x_col="__at_in_x",
             y_col="__at_in_y",
             sort_dir="ASC",
             max_capacity=max_capacity,
             max_zoom=max_zoom,
             max_tile_rows=max_tile_rows,
+            sampling=sampling,
+            grid_size=grid_size,
             id_col="row_id",
+            allow_oversize_leaves=allow_oversize_leaves,
             resume=resume,
+            custom_metadata=extra_custom_json,
             bounds=bounds_dict,
             stats=gaia_stats,
             view=gaia_view,

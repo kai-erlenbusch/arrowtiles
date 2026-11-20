@@ -52,18 +52,25 @@ def _find_full_lmsys_source() -> Path | None:
 
 
 def build_all_samples(
-    output_dir: Path = DEFAULT_SAMPLES_DIR, *, include_lmsys_full: bool = False
+    output_dir: Path = DEFAULT_SAMPLES_DIR,
+    *,
+    include_lmsys_full: bool = False,
+    build_d7_comparison: bool = False,
 ) -> dict[str, dict]:
+    import hashlib
+    import shutil
+
     output_dir.mkdir(parents=True, exist_ok=True)
     results: dict[str, dict] = {}
 
     gaia_sources = _find_gaia_sources()
     if gaia_sources:
         gaia_out = output_dir / "gaia_sample.arrowtiles"
-        target_rows = 150_000
-        rows_per_batch = max(1, (target_rows + len(gaia_sources) - 1) // len(gaia_sources))
-        with tempfile.TemporaryDirectory(prefix="gaia_sample_tmp_") as tmp_dir:
-            sampled_pq = Path(tmp_dir) / "gaia_fullsky_sample.parquet"
+        tmp_dir = output_dir / "_tmp_gaia_sample"
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            sampled_pq = tmp_dir / "gaia_fullsky_sample.parquet"
             files_sql = "[" + ", ".join(f"'{p.resolve().as_posix()}'" for p in gaia_sources) + "]"
             con = duckdb.connect()
             actual_rows = con.execute(
@@ -98,9 +105,12 @@ def build_all_samples(
                 max_capacity=25_000,
                 max_zoom=7,
                 memory_limit="4GB",
-                temp_dir=str(Path(tmp_dir) / "duck_tmp"),
+                temp_dir=str(tmp_dir / "duck_tmp"),
                 show_progress=False,
             )
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
         val = validate_file(gaia_out, expected_input_rows=int(actual_rows))
         size_bytes = gaia_out.stat().st_size
         if not val.ok:
@@ -120,20 +130,23 @@ def build_all_samples(
     lmsys_src = _find_lmsys_source()
     if lmsys_src is not None:
         lmsys_out = output_dir / "lmsys_sample.arrowtiles"
-        with tempfile.TemporaryDirectory(prefix="lmsys_sample_tmp_") as tmp_dir:
+        tmp_dir = output_dir / "_tmp_lmsys_sample"
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        try:
             build_generic(
                 input_parquet=lmsys_src,
                 output_path=lmsys_out,
                 x_col="x",
                 y_col="y",
-                sort_col="num_of_tokens",
-                sort_dir="DESC",
+                sort_col=None,
+                seed=42,
                 columns=["model", "num_of_tokens"],
                 row_limit=100_000,
                 max_capacity=20_000,
                 max_zoom=8,
                 memory_limit="4GB",
-                temp_dir=tmp_dir,
+                temp_dir=str(tmp_dir),
                 custom_config=json.dumps(
                     {
                         "colorField": "model",
@@ -143,6 +156,9 @@ def build_all_samples(
                 ),
                 show_progress=False,
             )
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
         val = validate_file(lmsys_out, expected_input_rows=100_000)
         size_bytes = lmsys_out.stat().st_size
         if not val.ok:
@@ -203,6 +219,57 @@ def build_all_samples(
         else:
             results["lmsys_full_v01"] = {"skipped": True, "reason": "lmsys.parquet not present"}
 
+    if build_d7_comparison:
+        full_src = _find_full_lmsys_source()
+        if full_src is not None:
+            for mode in ("even_coverage", "proportional"):
+                d7_out = output_dir / f"lmsys_d7_{mode}.arrowtiles"
+                duck_tmp = output_dir / f"_tmp_lmsys_d7_{mode}"
+                shutil.rmtree(duck_tmp, ignore_errors=True)
+                try:
+                    build_res = build_generic(
+                        input_parquet=full_src,
+                        output_path=d7_out,
+                        x_col="x_umap",
+                        y_col="y_umap",
+                        sort_col=None,
+                        seed=42,
+                        sampling=mode,
+                        max_capacity=100_000,
+                        max_zoom=14,
+                        memory_limit="16GB",
+                        temp_dir=duck_tmp,
+                        custom_config=json.dumps(
+                            {
+                                "colorField": "model",
+                                "sizeField": "num_of_tokens",
+                                "colorScale": "viridis",
+                            }
+                        ),
+                        show_progress=False,
+                    )
+                finally:
+                    shutil.rmtree(duck_tmp, ignore_errors=True)
+
+                expected_in = build_res["total_rows"] + build_res["dropped_rows"]
+                val_d7 = validate_file(d7_out, expected_input_rows=expected_in)
+                if not val_d7.ok:
+                    raise RuntimeError(f"lmsys_d7_{mode} validation failed: {val_d7.errors}")
+                digest = hashlib.sha256()
+                with open(d7_out, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(4 * 1024 * 1024), b""):
+                        digest.update(chunk)
+                results[f"lmsys_d7_{mode}"] = {
+                    "path": str(d7_out),
+                    "size_bytes": d7_out.stat().st_size,
+                    "sha256": digest.hexdigest(),
+                    "sampling": mode,
+                    "dropped_columns": build_res["dropped_columns"],
+                    "validation": val_d7.to_dict(),
+                }
+        else:
+            results["lmsys_d7"] = {"skipped": True, "reason": "lmsys.parquet not present"}
+
     return results
 
 
@@ -219,8 +286,17 @@ def main() -> int:
         action="store_true",
         help="Also build full 2.84M-row samples/lmsys_full_v01.arrowtiles (testing D7a free-text drop)",
     )
+    parser.add_argument(
+        "--build-d7-comparison",
+        action="store_true",
+        help="Build full 2.84M-row LMSys D7 comparison pair (even_coverage vs proportional, random seed=42)",
+    )
     args = parser.parse_args()
-    summary = build_all_samples(args.output_dir, include_lmsys_full=args.include_lmsys_full)
+    summary = build_all_samples(
+        args.output_dir,
+        include_lmsys_full=args.include_lmsys_full,
+        build_d7_comparison=args.build_d7_comparison,
+    )
     print(json.dumps(summary, indent=2))
     return 0
 

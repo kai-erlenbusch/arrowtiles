@@ -155,18 +155,18 @@ flowchart TD
 
 - **Phase 5a (Zero Behavior Change):** Split `src/main.ts` (`< 150` lines) into `DatasetSession`, `ViewState`, `RenderLoop`, `ControlsPanel`, and `ViewerLayer` (deriving `PMTilesClient` `flipY` and `Scatterplot` `yRange` from a single canonical `ViewState.effectiveFlipY`); isolate Three.js internals; declare `fflate`, add `typecheck`, and (`⛔` after confirmation) remove unused deps (`@sentry/*`, `gl-matrix`, `stats.js`) and dead `ui.ts`, `counter.ts`, `compute_test.mjs`. Verify identical before/after behavior on both samples.
 - **Phase 5b (Discrete Fixes, Each Individually Checked):**
-  1. Widen `accumBuffer` to `2 × u32` (`8 B/px`, checking `maxStorageBufferBindingSize` at 5K), separating `valSum` and `wSum | lineHits` in Modes 2 & 4 and keeping per-point curve unless `D10` changes it.
+  1. Widen `accumBuffer` to `2 × u32` (`8 B/px`, checking `maxStorageBufferBindingSize` at 5K), separating `valSum` and `wSum | lineHits` in Modes 2 & 4 (and `16-bit` channels in Modes 0 & 1), replacing `rawSize <= 0.0` with `!(rawSize == rawSize)` so negative magnitudes are never culled, and keeping per-point curve unless `D10` changes it.
   2. CPU `Float64` Relative-to-Center tile offsets uploaded as `f32` (`F-07`) + Mode 4 `cpy < screenHeight` guard.
   3. Monotonic load-generation token in `DatasetSession` + single `PMTiles` instance per load.
-  4. Unload tiles before recycling buffers in `setRequestedColumns` (`F-09`).
+  4. Unload tiles before recycling buffers in `setRequestedColumns` (`F-09`), request only active columns lazily instead of pre-decoding all `<= 12` schema columns, cap `bufferPool.columns` tightly, and release CPU `tile.columns` `ArrayBuffer`s once uploaded to GPU slots.
   5. Retry backoff + negative cache on failed tiles; complete `destroy()` / `ComputeRasterizer.dispose()` cleanup; clamp `zoomTUniform` to `[0, 1]`.
   6. If `D9 = Option 1`, move 2s axis transitions into `ComputeRasterizer` and retire `Scatterplot` point meshes.
 
 ---
 
-## 8. Phase 6: Real GPU-Memory Test (`__gpuStats`)
+## 8. Phase 6: Real GPU-Memory & CPU-Buffer Test (`__gpuStats`)
 
-- Instrument `GPUDevice.prototype.createBuffer` / `GPUBuffer.prototype.destroy` -> `window.__gpuStats` and HUD `liveBytes`; implement dynamic buffer lifecycle per `D9` (never leaving 0-length arrays on live attributes under Option 2, and preserving shared `position`/`uv`).
+- Instrument `GPUDevice.prototype.createBuffer` / `GPUBuffer.prototype.destroy` -> `window.__gpuStats` and HUD `liveBytes` (alongside CPU `ArrayBuffer` retention tracking); implement dynamic buffer lifecycle per `D9` (never leaving 0-length arrays on live attributes under Option 2, and preserving shared `position`/`uv`).
 - Run `tests/gpu-vram-lifecycle.spec.ts` on headed real-GPU Chrome (`channel: 'chrome'`; `⛔` ask before any `playwright install`): verify $\ge 20$ tiles & $> 0$ points, run deep-zoom eviction trajectory (`> maxCacheSize`), verify `liveBytes` plateaus, run 5 dataset swaps back to baseline, and confirm negative control fails when eviction/disposal is disabled.
 
 ---

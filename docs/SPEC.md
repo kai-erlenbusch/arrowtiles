@@ -78,7 +78,7 @@ Metadata **MUST** record `"nominal_max_zoom"` (`u8`), `"tile_capacity"` (`u32`, 
 ## 6. Priority, Statistics, View Hints & Reserved Names
 
 1. **Priority (`"priority"`):** Required metadata object:
-   - Seeded random (default when unspecified): `{"kind": "random", "seed": <int>}` (ranked by deterministic `hash64(row_id, seed) ASC, row_id ASC`).
+   - Seeded random (default when unspecified): `{"kind": "random", "seed": <int>}` ranked by portable `splitmix64(row_id, seed) ASC, row_id ASC` in unsigned 64-bit wrapping arithmetic (`seed_u64 = seed & 0xFFFFFFFFFFFFFFFF`; `z0 = row_id + seed_u64 + 0x9E3779B97F4A7C15`; `z1 = (z0 ^ (z0 >> 30)) * 0xBF58476D1CE4E5B9`; `z2 = (z1 ^ (z1 >> 27)) * 0x94D049BB133111EB`; `out = z2 ^ (z2 >> 31)`).
    - Column order: `{"kind": "column", "column": "<name>", "order": "asc" | "desc"}` (`NULL`/`NaN` sorted last, ties broken by `row_id ASC`).
 2. **Statistics (`"stats"`, `"tile_stats"`):**
    - `"stats"`: per-column map computed over **finite non-null** values only (RFC 8259 JSON; `NaN`/`Infinity` forbidden):

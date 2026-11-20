@@ -1070,6 +1070,21 @@ fn verify_hilbert_shift_invariants() -> PyResult<()> {
     Ok(())
 }
 
+#[inline]
+pub fn splitmix64_mix(row_id: u64, seed_u64: u64) -> u64 {
+    let z0 = row_id
+        .wrapping_add(seed_u64)
+        .wrapping_add(0x9E37_79B9_7F4A_7C15_u64);
+    let z1 = (z0 ^ (z0 >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9_u64);
+    let z2 = (z1 ^ (z1 >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB_u64);
+    z2 ^ (z2 >> 31)
+}
+
+#[pyfunction]
+fn splitmix64_hash(row_id: u64, seed: i128) -> u64 {
+    splitmix64_mix(row_id, seed as u64)
+}
+
 #[pymodule]
 #[pyo3(name = "_core")]
 fn arrowtiles_core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1077,6 +1092,7 @@ fn arrowtiles_core(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(init_threadpool, m)?)?;
     m.add_function(wrap_pyfunction!(run_bucketer, m)?)?;
     m.add_function(wrap_pyfunction!(verify_hilbert_shift_invariants, m)?)?;
+    m.add_function(wrap_pyfunction!(splitmix64_hash, m)?)?;
     m.add_class::<ArrowTilesPacker>()?;
     Ok(())
 }

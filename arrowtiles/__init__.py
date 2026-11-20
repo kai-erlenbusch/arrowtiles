@@ -11,6 +11,7 @@ from arrowtiles.builder import (
     ArrowTilesBuilder,
     build_gaia,
     build_generic,
+    splitmix64_py,
 )
 from arrowtiles.reader import ArrowTilesReader
 from arrowtiles.validator import ValidationResult, validate_file
@@ -33,6 +34,7 @@ __all__ = [
     "__version__",
     "build_gaia",
     "build_generic",
+    "splitmix64_py",
     "validate_file",
     "zstd_decompress",
 ]
