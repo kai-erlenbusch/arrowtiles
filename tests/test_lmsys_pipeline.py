@@ -1,44 +1,32 @@
-"""LMSys embedding pipeline smoke tests (adapted from archive/tests/test_lmsys.py & test_schema.py)."""
+"""LMSys embedding pipeline smoke tests (portable fixtures & Zstd helper)."""
 
 from __future__ import annotations
 
 import base64
-import compression.zstd as zstd
 import json
 from pathlib import Path
 
 import duckdb
 import pyarrow.ipc as ipc
-import pytest
 from pmtiles.reader import MmapSource, Reader, all_tiles
 
 from arrowtiles import ArrowTilesBuilder
-
-MOCK_LMSYS = Path(r"D:\exploratory\duckdb-extension\mock_lmsys.parquet")
-FULL_LMSYS = Path(r"D:\exploratory\duckdb-extension\duckdb-cosmograph-oss\lmsys.parquet")
+from conftest import zstd_decompress
 
 
-@pytest.mark.skipif(
-    not FULL_LMSYS.is_file(),
-    reason=f"Requires local dataset {FULL_LMSYS}",
-)
-def test_lmsys_parquet_schema_columns() -> None:
+def test_lmsys_parquet_schema_columns(full_lmsys_parquet_path: Path) -> None:
     con = duckdb.connect()
     cols = [
         r[0]
         for r in con.execute(
-            f"DESCRIBE SELECT * FROM read_parquet('{FULL_LMSYS.as_posix()}')"
+            f"DESCRIBE SELECT * FROM read_parquet('{full_lmsys_parquet_path.as_posix()}')"
         ).fetchall()
     ]
     con.close()
     assert {"x_umap", "y_umap", "num_of_tokens", "model"}.issubset(set(cols))
 
 
-@pytest.mark.skipif(
-    not MOCK_LMSYS.is_file(),
-    reason=f"Requires local sample dataset {MOCK_LMSYS}",
-)
-def test_lmsys_smoke_build_on_sample(tmp_path: Path) -> None:
+def test_lmsys_smoke_build_on_sample(mock_lmsys_parquet_path: Path, tmp_path: Path) -> None:
     output_archive = tmp_path / "lmsys_smoke_test.arrowtiles"
     temp_dir = tmp_path / "lmsys_temp"
     sample_limit = 5_000
@@ -47,7 +35,7 @@ def test_lmsys_smoke_build_on_sample(tmp_path: Path) -> None:
     bounds = con.execute(
         f"""
         SELECT MIN(x), MAX(x), MIN(y), MAX(y)
-        FROM (SELECT * FROM read_parquet('{MOCK_LMSYS.as_posix()}') LIMIT {sample_limit})
+        FROM (SELECT * FROM read_parquet('{mock_lmsys_parquet_path.as_posix()}') LIMIT {sample_limit})
         """
     ).fetchone()
     con.close()
@@ -63,7 +51,7 @@ def test_lmsys_smoke_build_on_sample(tmp_path: Path) -> None:
             CAST((x - ({min_x})) / {range_x} AS DOUBLE) AS x_norm,
             CAST((y - ({min_y})) / {range_y} AS DOUBLE) AS y_norm,
             CAST(num_of_tokens AS FLOAT) AS sort_metric
-        FROM (SELECT * FROM read_parquet('{MOCK_LMSYS.as_posix()}') LIMIT {sample_limit})
+        FROM (SELECT * FROM read_parquet('{mock_lmsys_parquet_path.as_posix()}') LIMIT {sample_limit})
         WHERE x IS NOT NULL AND y IS NOT NULL
     """
 
@@ -93,7 +81,7 @@ def test_lmsys_smoke_build_on_sample(tmp_path: Path) -> None:
         reader = Reader(source)
         schema_bytes = base64.b64decode(reader.metadata()["arrow_schema"])
         total_rows = sum(
-            ipc.open_stream(schema_bytes + zstd.decompress(raw)).read_all().num_rows
+            ipc.open_stream(schema_bytes + zstd_decompress(raw)).read_all().num_rows
             for _zxy, raw in all_tiles(source)
         )
     assert total_rows == sample_limit

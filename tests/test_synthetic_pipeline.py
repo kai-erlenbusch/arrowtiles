@@ -1,16 +1,31 @@
-"""Synthetic end-to-end pipeline smoke tests (adapted from archive/tests/create_dummy.py & read_meta_pmtiles.py)."""
+"""Synthetic end-to-end pipeline & environment portability tests."""
 
 from __future__ import annotations
 
 import base64
-import compression.zstd as zstd
+import sys
 from pathlib import Path
 
+import arrowtiles_core
 import duckdb
+import pyarrow as pa
 import pyarrow.ipc as ipc
 from pmtiles.reader import MmapSource, Reader, all_tiles
 
 from arrowtiles import build_generic
+from conftest import REPO_ROOT, zstd_decompress
+
+
+def test_arrowtiles_core_loaded_from_venv() -> None:
+    """Verify arrowtiles_core is loaded from the local .venv, never repo root or global site-packages."""
+    loaded = Path(arrowtiles_core.__file__).resolve()
+    expected_venv = (
+        Path(sys.prefix).resolve()
+        if Path(sys.prefix).resolve() != Path(sys.base_prefix).resolve()
+        else (REPO_ROOT / ".venv").resolve()
+    )
+    assert loaded.is_relative_to(expected_venv), f"Unexpected arrowtiles_core path: {loaded}"
+    assert not (REPO_ROOT / "arrowtiles_core.pyd").exists(), "Stale root arrowtiles_core.pyd must not exist"
 
 
 def test_build_generic_synthetic_roundtrip(tmp_path: Path) -> None:
@@ -68,7 +83,10 @@ def test_build_generic_synthetic_roundtrip(tmp_path: Path) -> None:
         tile_count = 0
         for _zxy, raw_tile in all_tiles(source):
             tile_count += 1
-            decompressed = zstd.decompress(raw_tile)
+            decompressed = zstd_decompress(raw_tile)
+            # Verify pyarrow streaming fallback produces identical bytes for Python <3.14 portability
+            pa_decompressed = pa.input_stream(pa.py_buffer(raw_tile), compression="zstd").read()
+            assert decompressed == pa_decompressed
             table = ipc.open_stream(schema_bytes + decompressed).read_all()
             total_rows += table.num_rows
 

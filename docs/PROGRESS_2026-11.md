@@ -164,3 +164,34 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
   2. ⛔ `git push` of `revival/2026-11-wip` (both repos): still not run, awaiting your call.
   3. May I move the stale root `duckdb-arrowtiles\arrowtiles_core.pyd` into `archive\`? (Same question as above; I agree with it.) The 2026-07-19 copy in system Python's `site-packages` has the same problem; uninstalling it is your call.
   4. `logs/` is gitignored, so the audit and research files this log cites are not versioned. Should reviews live in tracked `docs/reviews/` instead?
+
+
+## 2026-11-19 — Phase 0 (finish): cleanup, dev-server hardening, MuniLM logs & portable tests
+
+- **Done:**
+  1. **Restored `docs/PROGRESS_2026-11.md` (`D1`):** Ran `git checkout -- docs/PROGRESS_2026-11.md` to restore the 117-line independent verification and P1–P6 baseline probe record from commit `8c04c98` (verified 166 lines prior to appending this entry).
+  2. **Archived stale root binary (`D2`):** Moved `D:\exploratory\duckdb-extension\duckdb-arrowtiles\arrowtiles_core.pyd` (`2026-07-22`) to `archive/arrowtiles_core_2026-07-22.pyd` so `sys.path[0]` can no longer shadow `.venv` builds.
+  3. **Configured MuniLM `logs/` tracking (`Patch 5`):** Updated `duckdb-arrowtiles/.gitignore` with surgical rules (`logs/*`, `!logs/README.md`, `!logs/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]_*.md`), persisted `2026-11-19_03_AUDIT_all_comprehensive-code-review-and-archaeology.md`, `2026-11-19_04_RESEARCH_all_ecosystem-format-duckdb15-and-licensing.md`, and the merged consensus plan `2026-11-19_05_PLAN_all_merged-consensus-revival-plan.md`, and updated `logs/README.md`. Verified `0` historic raw transcript files are staged.
+  4. **Hardened Vite range middleware (`deepgraph-arrowtiles-sandbox/vite.config.ts`):** Bound `server.host` to `'127.0.0.1'` by default, wrapped `decodeURIComponent` in `try/catch` (`400`), enforced directory containment via `path.relative` before `Range` evaluation (`403`), capped single range reads to `16 MiB` (`16,777,216` bytes), and revalidated `stat.size` + `stat.mtimeMs` on cached file descriptors.
+  5. **Made writer `pytest` suite portable (`duckdb-arrowtiles/tests/`):** Replaced hardcoded `D:\` paths with workspace-relative fixtures + env-var overrides (`ARROWTILES_*`) that cleanly `pytest.skip` when absent, added a cross-Python 3.10–3.14 `zstd_decompress` helper (`compression.zstd` -> `pyarrow` streaming Zstd fallback), and asserted in `conftest.py` (plus explicit `test_arrowtiles_core_loaded_from_venv`) that `arrowtiles_core.__file__` resolves inside `.venv`.
+
+- **Evidence:**
+  - **Writer `pytest` Suite:**
+    - Command: `& "D:\exploratory\duckdb-extension\duckdb-arrowtiles\.venv\Scripts\python.exe" -m pytest -v -rs -p no:cacheprovider`
+    - Output: `7 passed, 1 skipped in 2.09s` (including new `test_arrowtiles_core_loaded_from_venv` + PyArrow Zstd parity check; missing-file fixture override verified `1 passed, 1 skipped in 0.06s`).
+  - **Viewer TypeScript Check:**
+    - Command: `Set-Location -LiteralPath "D:\exploratory\duckdb-extension\deepgraph-arrowtiles-sandbox"; npx tsc --noEmit`
+    - Output: `exit code 0` (0 errors).
+  - **Hardened Vite Dev Server Checks (`127.0.0.1:5198`):**
+    - Listener check (`Get-NetTCPConnection -LocalPort 5198 -State Listen`): bound exclusively to `127.0.0.1:5198` (not `0.0.0.0`); listener verified closed after shutdown.
+    - Traversal with & without `Range` (`curl.exe --path-as-is ... "http://127.0.0.1:5198/..%2F..%2Fduckdb-arrowtiles%2Ftest.arrowtiles"`): `HTTP/1.1 403 Forbidden`.
+    - Malformed URL encoding (`curl.exe --path-as-is ... "http://127.0.0.1:5198/%E0%A4%A.arrowtiles"`): `HTTP/1.1 400 Bad Request`.
+    - Open-ended range on 31.0 GB archive (`curl.exe -H "Range: bytes=0-" "http://127.0.0.1:5198/gaia_full.arrowtiles"`): `HTTP/1.1 206 Partial Content`, `Content-Range: bytes 0-16777215/31016634401`, `Content-Length: 16777216` (16 MiB cap).
+    - Standard 127-byte header range on `test.arrowtiles`: `HTTP/1.1 206 Partial Content`, `Content-Range: bytes 0-126/2957198`, `Content-Length: 127`.
+
+- **Not done / failed:**
+  - **`git push`:** Not run (awaiting owner approval per `⛔` guardrail).
+
+- **Questions for owner (before Phase 1):**
+  1. **⛔ D6 (Phase 1 samples in Git):** When Phase 1 builds `gaia_sample.arrowtiles`, `lmsys_sample.arrowtiles`, and the edge-case sample (`< 20 MB` each), do you want them kept untracked/generated via script (`samples/` gitignored) or committed to Git?
+  2. **Go-ahead for Phase 1:** Ready to start **Phase 1** (`docs/SPEC.md` v0.1, `arrowtiles/` package + `pyproject.toml`, dense `row_id`, `UInt8`/`UInt16` categories, `max_tile_rows` up to `z = 20`, reference `reader`/`validate`, and Phase 1b viewer compatibility + `header.maxZoom` plumbing)?

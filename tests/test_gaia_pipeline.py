@@ -1,4 +1,4 @@
-"""Gaia Hammer-projection pipeline smoke tests (adapted from archive/tests/check.py & test_gaia_custom.py).
+"""Gaia Hammer-projection pipeline smoke tests (portable fixtures & Zstd helper).
 
 Writes exclusively to pytest `tmp_path`; never touches `gaia_full.arrowtiles` or `s3_cache/`.
 """
@@ -6,31 +6,24 @@ Writes exclusively to pytest `tmp_path`; never touches `gaia_full.arrowtiles` or
 from __future__ import annotations
 
 import base64
-import compression.zstd as zstd
 from pathlib import Path
 
 import duckdb
 import pyarrow.ipc as ipc
-import pytest
 from pmtiles.reader import MmapSource, Reader, all_tiles
 
 from arrowtiles import ArrowTilesBuilder
-
-GAIA_BATCH_0 = Path(
-    r"D:\exploratory\duckdb-extension\deepgraph-arrowtiles-sandbox\s3_cache\batch_000.parquet"
-)
+from conftest import zstd_decompress
 
 
-@pytest.mark.skipif(
-    not GAIA_BATCH_0.is_file(),
-    reason=f"Requires local Gaia cache file {GAIA_BATCH_0}",
-)
-def test_gaia_batch_schema_and_hammer_smoke_build(tmp_path: Path) -> None:
+def test_gaia_batch_schema_and_hammer_smoke_build(
+    gaia_batch0_parquet_path: Path, tmp_path: Path
+) -> None:
     con = duckdb.connect()
     cols = [
         r[0]
         for r in con.execute(
-            f"DESCRIBE SELECT * FROM read_parquet('{GAIA_BATCH_0.as_posix()}')"
+            f"DESCRIBE SELECT * FROM read_parquet('{gaia_batch0_parquet_path.as_posix()}')"
         ).fetchall()
     ]
     con.close()
@@ -59,7 +52,7 @@ def test_gaia_batch_schema_and_hammer_smoke_build(tmp_path: Path) -> None:
                 RADIANS(192.85948) AS a_g,
                 RADIANS(27.12825) AS d_g,
                 RADIANS(122.93192) AS l_ncp
-            FROM read_parquet('{GAIA_BATCH_0.as_posix()}')
+            FROM read_parquet('{gaia_batch0_parquet_path.as_posix()}')
             WHERE ra IS NOT NULL AND dec IS NOT NULL
             LIMIT {sample_limit}
         ),
@@ -107,7 +100,7 @@ def test_gaia_batch_schema_and_hammer_smoke_build(tmp_path: Path) -> None:
         reader = Reader(source)
         schema_bytes = base64.b64decode(reader.metadata()["arrow_schema"])
         total_rows = sum(
-            ipc.open_stream(schema_bytes + zstd.decompress(raw)).read_all().num_rows
+            ipc.open_stream(schema_bytes + zstd_decompress(raw)).read_all().num_rows
             for _zxy, raw in all_tiles(source)
         )
     assert total_rows == sample_limit
