@@ -79,20 +79,43 @@ maturin develop --release
 
 ## ⚙️ Usage & Configuration
 
-Once the Rust binary is compiled, you execute the Python orchestrator to begin the 2-pass build process:
+Once the package and Rust extension are installed (`maturin develop --release`), run the `arrowtiles` CLI (or import `build_generic` / `build_gaia` in Python):
 
 ```bash
-python arrowtiles.py --input "path/to/raw/*.parquet" --output "gaia.arrowtiles"
+# Generic 2D embedding / point cloud (selects active visual columns for fast streaming):
+python -m arrowtiles build \
+  --input "embeddings.parquet" \
+  --output "embeddings.arrowtiles" \
+  --x-col x --y-col y \
+  --columns model clusters_14 num_of_tokens \
+  --categorical-cols clusters_14
+
+# ESA Gaia DR3 Hammer sky preset (phot_g_mean_mag ASC + even_coverage):
+python -m arrowtiles build \
+  --preset gaia \
+  --input "path/to/gaia_batches/*.parquet" \
+  --output "gaia.arrowtiles"
+
+# Validate an .arrowtiles v0.1 archive:
+python -m arrowtiles validate "embeddings.arrowtiles"
 ```
 
-### CLI Arguments
+> **Important — Wide Tables & `--columns`:** Each `.arrowtiles` v0.1 tile packs all retained columns into a single contiguous Arrow IPC `RecordBatch` so browsers can stream an entire tile in **1 HTTP Range request**. On wide 30+-column tables, always pass **`--columns <col1> <col2> ...`** (or `columns=[...]` in `build_generic`) to retain only the columns needed for visual encoding. Keeping `Z=0..2` overview payload below `10 MiB` avoids multi-second WAN downloads (e.g. `1.3 s` projected vs. `7.2 s` unprojected on a `50 Mbps` connection). High-cardinality free-text columns (`distinct > 4,096`) are automatically dropped unless explicitly listed in `--columns`, and builds automatically emit a warning whenever `Z=0..2` overview bytes exceed `10 MiB`.
+
+### Key CLI Arguments (`python -m arrowtiles build`)
 | Argument | Description |
 | :--- | :--- |
-| `--input` | (Required) Glob path to the input Parquet files. |
-| `--output` | (Required) Path where the final `.arrowtiles` archive will be written. |
-| `--config` | (Optional) Path to a JSON configuration file defining custom schema mappings. |
-| `--temp-dir` | (Optional) Path for intermediate DuckDB data. Defaults to `./duckdb_temp`. |
-| `--resume` | (Optional) Skips Pass 1 and resumes directly from the `bucketed_temp.parquet` file. |
+| `--input` | (Required) Path or glob pattern to input Parquet file(s). |
+| `--output` | (Required) Output `.arrowtiles` archive path. |
+| `--x-col`, `--y-col` | Source coordinate columns (default `x`, `y` in generic mode). |
+| `--columns` | **Recommended on wide tables:** Explicit list of payload columns to retain in tiles. |
+| `--categorical-cols` | Force discrete integer/string columns (e.g. `clusters_14`) to encode as `UInt8`/`UInt16` categories. |
+| `--preset gaia` | Astronomical Galactic Hammer projection (`phot_g_mean_mag ASC`, `even_coverage`, `100,000` tile capacity). |
+| `--sampling` | `proportional` (generic default, `25,000` tile capacity) or `even_coverage` (`G×G` sub-grid at `Z<=6`). |
+| `--tile-capacity` | Max rows per non-leaf tile (`25,000` generic default; `100,000` on `--preset gaia`). |
+| `--sort-col`, `--sort-dir` | Deterministic column priority (`ASC`/`DESC`); defaults to portable `SplitMix64(row_id, seed)`. |
+| `--id-col` | Optional unique unsigned integer row identifier column (defaults to dense `0 .. N-1` Parquet offset). |
+| `--temp-dir` | Directory for intermediate Pass 1 Z-partitions (`--resume` reuses verified SHA-256 manifests). |
 
 ### Input Data Requirements
 The pipeline is a **generalized data visualizer**. When running the `build_generic` pipeline, DuckDB automatically inspects your dataset's schema, identifies all numeric columns, and runs global `MIN()` and `MAX()` aggregations to establish automatic bounding stats. 

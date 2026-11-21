@@ -27,6 +27,8 @@ DEFAULT_NOMINAL_MAX_ZOOM = 14
 DEFAULT_RANDOM_SEED = 42
 MAX_CATEGORIES_CAP = 65_535
 DEFAULT_AUTO_MAX_CATEGORIES = 4_096
+OVERVIEW_Z0_2_WARN_BYTES = 10 * 1024 * 1024  # 10 MiB compressed Z=0..2 overview threshold
+JS_MAX_SAFE_INTEGER = 9_007_199_254_740_991   # 2^53 - 1
 
 SPLITMIX64_GAMMA = 11400714819323198485  # 0x9E3779B97F4A7C15
 SPLITMIX64_MUL1 = 13787848793156543929   # 0xBF58476D1CE4E5B9
@@ -258,6 +260,7 @@ class ArrowTilesBuilder:
             f"COUNT(*) FILTER (WHERE {finite_pred}) AS valid_in",
             f"COUNT(*) FILTER (WHERE {finite_pred} AND {q_id} IS NULL) AS null_ids",
             f"COUNT(*) FILTER (WHERE {finite_pred} AND {q_id} < 0) AS neg_ids",
+            f"MAX(CAST({q_id} AS UBIGINT)) FILTER (WHERE {finite_pred} AND {q_id} IS NOT NULL AND {q_id} >= 0) AS max_id",
         ]
         meta_plan: list[tuple[str, str]] = []
 
@@ -286,15 +289,22 @@ class ArrowTilesBuilder:
         query_valid_in = int(row[1] or 0)
         null_ids = int(row[2] or 0)
         neg_ids = int(row[3] or 0)
+        max_id_val = int(row[4] or 0)
         if null_ids > 0:
             raise ValueError(f"id_col '{id_col}' contains {null_ids} NULL value(s)")
         if neg_ids > 0:
             raise ValueError(f"id_col '{id_col}' contains {neg_ids} negative value(s)")
         if query_valid_in == 0:
             raise ValueError("Input contains 0 rows with finite (x, y) coordinates")
+        if max_id_val > JS_MAX_SAFE_INTEGER:
+            print(
+                f"[ArrowTiles] Warning: id_col '{id_col}' has values > 2^53 - 1 (max={max_id_val}); "
+                f"stored losslessly as UInt64, but JavaScript consumers should inspect rowIdBigInt for exact precision.",
+                flush=True,
+            )
 
         stats: dict[str, dict[str, Any]] = {}
-        idx = 4
+        idx = 5
         for col_name, kind in meta_plan:
             if kind == "categorical":
                 null_count = int(row[idx] or 0)
@@ -768,7 +778,21 @@ class ArrowTilesBuilder:
 
                 packer.process_batch(ptr_pass2)
 
-            packed_rows, observed_max_rows, max_compressed_bytes = packer.finalize()
+            (
+                packed_rows,
+                observed_max_rows,
+                max_compressed_bytes,
+                overview_z0_2_bytes,
+            ) = packer.finalize()
+
+            if int(overview_z0_2_bytes) > OVERVIEW_Z0_2_WARN_BYTES:
+                ov_mib = int(overview_z0_2_bytes) / (1024.0 * 1024.0)
+                print(
+                    f"[ArrowTiles] Warning: Z=0..2 overview tiles total {ov_mib:.2f} MiB "
+                    f"(> 10.0 MiB). On wide tables, pass --columns (or columns=[...]) to retain "
+                    f"only active visual columns for faster initial streaming.",
+                    flush=True,
+                )
 
             for tbl_name, _ in cat_lookup_tables.values():
                 self.con.execute(f"DROP TABLE IF EXISTS {q(tbl_name)}")
@@ -787,6 +811,7 @@ class ArrowTilesBuilder:
                 "actual_max_zoom": int(actual_max_z),
                 "observed_max_tile_rows": int(observed_max_rows),
                 "max_compressed_tile_bytes": int(max_compressed_bytes),
+                "overview_z0_2_bytes": int(overview_z0_2_bytes),
                 "resumed_pass1": resumed_pass1,
                 "fingerprint": manifest_fingerprint,
                 "elapsed_seconds": time.time() - t_global,
@@ -1022,6 +1047,7 @@ def build_generic(
                     'COUNT("__at_row_id") AS id_non_null',
                     'COUNT(DISTINCT "__at_row_id") AS id_distinct',
                     'COUNT(*) FILTER (WHERE "__at_row_id" < 0) AS id_neg',
+                    'MAX(CAST("__at_row_id" AS UBIGINT)) FILTER (WHERE "__at_row_id" IS NOT NULL AND "__at_row_id" >= 0) AS id_max',
                 ]
             )
         for col in numeric_payload:
@@ -1056,7 +1082,8 @@ def build_generic(
             id_non_null = int(agg_row[cursor] or 0)
             id_distinct = int(agg_row[cursor + 1] or 0)
             id_neg = int(agg_row[cursor + 2] or 0)
-            cursor += 3
+            id_max = int(agg_row[cursor + 3] or 0)
+            cursor += 4
             if id_non_null != input_rows:
                 raise ValueError(f"id_col '{id_col}' contains NULL values")
             if id_neg > 0:
@@ -1064,6 +1091,12 @@ def build_generic(
             if id_distinct != input_rows:
                 raise ValueError(
                     f"id_col '{id_col}' is not unique ({id_distinct} distinct values across {input_rows} rows)"
+                )
+            if id_max > JS_MAX_SAFE_INTEGER:
+                print(
+                    f"[ArrowTiles] Warning: id_col '{id_col}' has values > 2^53 - 1 (max={id_max}); "
+                    f"stored losslessly as UInt64, but JavaScript consumers should inspect rowIdBigInt for exact precision.",
+                    flush=True,
                 )
 
         if valid_rows == 0:

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import duckdb
 import pyarrow as pa
+import pytest
 
 from arrowtiles import (
     ArrowTilesBuilder,
@@ -451,3 +452,58 @@ def test_sparse_utinyint_usmallint_categorical_cols(tmp_path: Path) -> None:
         assert set(u8_labels) == {"10", "20", "30"}
         u16_labels = root_dec["sparse_u16"].to_pylist()
         assert set(u16_labels) == {"100", "250", "1000"}
+
+
+def test_overview_bytes_warning_and_uint64_large_id_col(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify Z=0..2 overview byte reporting/warning and lossless UInt64 --id-col > 2^53 - 1."""
+    import arrowtiles.builder as bmod
+
+    src_pq = tmp_path / "large_ids.parquet"
+    base_id = 5_900_000_000_000_000_000  # Gaia DR3 source_id scale (> 2^53 - 1)
+    con = duckdb.connect()
+    con.execute(
+        f"""
+        COPY (
+            SELECT
+                CAST({base_id} AS UBIGINT) + CAST(i AS UBIGINT) AS source_id,
+                CAST(i % 25 AS DOUBLE) * 0.04 AS x,
+                CAST(i // 25 AS DOUBLE) * 0.1 AS y,
+                CAST(i AS FLOAT) AS metric
+            FROM range(200) AS t(i)
+        ) TO '{src_pq.as_posix()}' (FORMAT PARQUET)
+        """
+    )
+    con.close()
+
+    # Lower overview warning threshold via monkeypatch to verify the warning fires deterministically
+    monkeypatch.setattr(bmod, "OVERVIEW_Z0_2_WARN_BYTES", 100)
+
+    out_at = tmp_path / "large_ids.arrowtiles"
+    res = build_generic(
+        input_parquet=src_pq,
+        output_path=out_at,
+        x_col="x",
+        y_col="y",
+        id_col="source_id",
+        max_capacity=40,
+        max_zoom=4,
+        temp_dir=tmp_path / "tmp_large_id",
+        show_progress=False,
+    )
+
+    captured = capsys.readouterr().out
+    assert "values > 2^53 - 1" in captured
+    assert "Z=0..2 overview tiles total" in captured
+    assert "--columns" in captured
+    assert res["overview_z0_2_bytes"] > 100
+
+    val = validate_file(out_at, expected_input_rows=200)
+    assert val.ok, val.errors
+
+    with ArrowTilesReader(out_at) as reader:
+        root = reader.read_tile(0, 0, 0)
+        assert root is not None
+        ids = root["row_id"].to_pylist()
+        assert all(base_id <= v < base_id + 200 for v in ids)

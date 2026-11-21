@@ -551,6 +551,7 @@ fn flush_chunk_buffer(
     declared_max_tile_rows: u32,
     observed_max_tile_rows: &mut u32,
     max_compressed_tile_bytes: &mut usize,
+    overview_compressed_bytes: &mut u64,
 ) -> Result<()> {
     if buffer.is_empty() {
         return Ok(());
@@ -648,6 +649,9 @@ fn flush_chunk_buffer(
         }
         let tile_id = pmtiles::TileId::new(tid)?;
         let coord: pmtiles::TileCoord = tile_id.into();
+        if coord.z() <= 2 {
+            *overview_compressed_bytes += compressed_bytes.len() as u64;
+        }
         writer.add_tile(coord, &compressed_bytes)?;
     }
 
@@ -664,6 +668,7 @@ struct ArrowTilesPacker {
     declared_max_tile_rows: u32,
     observed_max_tile_rows: u32,
     max_compressed_tile_bytes: usize,
+    overview_compressed_bytes: u64,
     last_pushed_tid: Option<u64>,
     current_tile_id: Option<u64>,
     current_batches: Vec<RecordBatch>,
@@ -811,6 +816,7 @@ impl ArrowTilesPacker {
             declared_max_tile_rows: declared_max_tile_rows.max(1),
             observed_max_tile_rows: 0,
             max_compressed_tile_bytes: 0,
+            overview_compressed_bytes: 0,
             last_pushed_tid: None,
             current_tile_id: None,
             current_batches: Vec::new(),
@@ -879,6 +885,7 @@ impl ArrowTilesPacker {
                             self.declared_max_tile_rows,
                             &mut self.observed_max_tile_rows,
                             &mut self.max_compressed_tile_bytes,
+                            &mut self.overview_compressed_bytes,
                         )
                         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
                     }
@@ -917,6 +924,7 @@ impl ArrowTilesPacker {
                             self.declared_max_tile_rows,
                             &mut self.observed_max_tile_rows,
                             &mut self.max_compressed_tile_bytes,
+                            &mut self.overview_compressed_bytes,
                         )
                         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
                     }
@@ -935,7 +943,7 @@ impl ArrowTilesPacker {
         Ok(())
     }
 
-    fn finalize(&mut self, py: Python) -> PyResult<(u64, u32, usize)> {
+    fn finalize(&mut self, py: Python) -> PyResult<(u64, u32, usize, u64)> {
         let mut writer = self
             .writer
             .take()
@@ -958,6 +966,7 @@ impl ArrowTilesPacker {
             self.declared_max_tile_rows,
             &mut self.observed_max_tile_rows,
             &mut self.max_compressed_tile_bytes,
+            &mut self.overview_compressed_bytes,
         ) {
             drop(writer);
             let _ = std::fs::remove_file(&self.tmp_path);
@@ -996,6 +1005,7 @@ impl ArrowTilesPacker {
             self.row_count,
             self.observed_max_tile_rows,
             self.max_compressed_tile_bytes,
+            self.overview_compressed_bytes,
         ))
     }
 }
