@@ -20,6 +20,7 @@ from tqdm import tqdm
 
 SPEC_FORMAT = "arrowtiles"
 SPEC_VERSION = "0.1"
+SPEC_TILING = "quadtree-2d"
 DEFAULT_TILE_CAPACITY = 25_000
 DEFAULT_GAIA_TILE_CAPACITY = 100_000
 DEFAULT_MAX_TILE_ROWS = 262_144
@@ -62,6 +63,7 @@ RESERVED_METADATA_KEYS = frozenset(
     {
         "format",
         "version",
+        "tiling",
         "arrow_schema",
         "bounds",
         "priority",
@@ -710,6 +712,7 @@ class ArrowTilesBuilder:
             spec_metadata: dict[str, Any] = {
                 "format": SPEC_FORMAT,
                 "version": SPEC_VERSION,
+                "tiling": SPEC_TILING,
                 "bounds": {
                     "min_x": float(bounds_meta["min_x"]),
                     "max_x": float(bounds_meta["max_x"]),

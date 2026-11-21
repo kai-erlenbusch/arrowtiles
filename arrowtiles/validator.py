@@ -218,6 +218,12 @@ def validate_file(
         grid_size: int | None = None
 
         if not is_legacy:
+            tiling_val = metadata.get("tiling")
+            if tiling_val is not None and tiling_val != "quadtree-2d":
+                errors.append(
+                    f"Unsupported metadata.tiling {tiling_val!r} (v0.1 validator supports 'quadtree-2d')"
+                )
+
             for req_key in REQUIRED_V01_METADATA_KEYS:
                 if req_key not in metadata:
                     errors.append(f"Missing required v0.1 metadata key '{req_key}'")

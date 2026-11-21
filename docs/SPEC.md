@@ -1,6 +1,7 @@
 # ArrowTiles Format Specification (`v0.1`)
 
-**Status:** Draft `v0.1` (2026-11-19)  
+**Status:** `v0.1` (2026-11-21)  
+**License:** Apache License 2.0 (see [`../LICENSE`](../LICENSE)).  
 **Media Type Profile:** PMTiles v3 (`TileType = Unknown`, `TileCompression = Zstd`) with schema-stripped Apache Arrow IPC `RecordBatch` payloads.
 
 ---
@@ -20,8 +21,9 @@ An `.arrowtiles` file **MUST** be a spec-valid **PMTiles v3** archive (`bytes 0.
 The PMTiles JSON metadata object **MUST** include:
 - `"format": "arrowtiles"`
 - `"version": "0.1"` (`"<major>.<minor>"`)
+- `"tiling": "quadtree-2d"` *(writers **SHOULD** emit `"tiling": "quadtree-2d"` in `v0.1`; omitted `"tiling"` in existing `v0.1` files defaults to `"quadtree-2d"`, and `v0.1` readers **MUST** reject any present value other than `"quadtree-2d"` so future 2.5D/octree spatial schemes fail fast with a clear diagnostic)*
 
-**Version Handling:** Compliant readers **MUST** reject files whose `"format"` is not `"arrowtiles"` or whose major version is unknown (in `0.x`, major version `!= 0`). Legacy pre-spec archives lacking `"format"`/`"version"` **MAY** be opened in compatibility mode with a diagnostic warning.
+**Version & Tiling Handling:** Compliant readers **MUST** reject files whose `"format"` is not `"arrowtiles"`, whose major version is unknown (in `0.x`, major version `!= 0`), or whose `"tiling"` (when present) is not `"quadtree-2d"`. Legacy pre-spec archives lacking `"format"`/`"version"` **MAY** be opened in compatibility mode with a diagnostic warning.
 
 ---
 
@@ -88,7 +90,7 @@ Metadata **MUST** record `"nominal_max_zoom"` (`u8`), `"tile_capacity"` (`u32`, 
 3. **Optional View Hints (`"view"`):** Optional metadata object (`colorField`, `colorMin`, `colorMax`, `sizeField`, `sizeMin`, `sizeMax`, `colorScale`, `preserveAspect`, `mode`). Readers **MUST NOT** require `"view"`. Viewers rendering categorical columns **MUST** treat `NULL`/`NaN` values as missing (never category `0`) and **SHOULD** provide at least a 64-color palette with deterministic wrap/hue-hashing above 64 categories.
 4. **Reserved Identifiers & Future Extensions:**
    - **Reserved Columns:** `row_id`, `x_u16`, `y_u16`, `z`, `final_tile_id`, and prefix `__at_*` (writers **MUST** reject colliding user columns unless `row_id` is passed via `--id-col`).
-   - **Reserved Metadata Keys:** `format`, `version`, `arrow_schema`, `bounds`, `priority`, `sampling`, `grid_size`, `nominal_max_zoom`, `tile_capacity`, `max_tile_rows`, `total_rows`, `dropped_rows`, `dropped_columns`, `stats`, `tile_stats`, `view`, `layers`, `edges` (writers **MUST** error on unparseable custom metadata JSON or reserved-key collisions).
+   - **Reserved Metadata Keys:** `format`, `version`, `tiling`, `arrow_schema`, `bounds`, `priority`, `sampling`, `grid_size`, `nominal_max_zoom`, `tile_capacity`, `max_tile_rows`, `total_rows`, `dropped_rows`, `dropped_columns`, `stats`, `tile_stats`, `view`, `layers`, `edges` (writers **MUST** error on unparseable custom metadata JSON or reserved-key collisions).
    - **Required `v0.2` Roadmap Extensions & Reserved Concepts:**
      - **Required in `v0.2` — `"layers"` (Multi-Archive Column-Group Sidecars):** Partitioning wide (e.g. 30+-column) tables across a lean core geometry/visual `.arrowtiles` archive plus co-tiled auxiliary column-group `.arrowtiles` layer archives sharing identical `(z, x, y)` Hilbert tile assignments and row order (`D8`).
      - **Planned in `v0.2` — `"tile_stats"` Summary Grids:** Per-tile precomputed density / category-count summary grids decoupling overview density & category shading from point-sampling mode (`D7`).

@@ -154,6 +154,9 @@ COPY (
 ---
 
 ## 📄 Licensing
-This project is freely available for non-commercial use under the **Creative Commons Attribution Non Commercial CC BY-NC 4.0** public license. Please note that this license does not permit commercial use of the software. For more information about the limitations of this license, you can refer to the [CC BY-NC 4.0 License Deed](https://creativecommons.org/licenses/by-nc/4.0/).
 
-If you’re planning to use this software commercially, please reach out to us for a Business license.
+Licensed under the **Apache License 2.0**. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+
+### Data Attribution
+- **ESA Gaia DR3:** Gaia data © ESA/Gaia/DPAC (attribution required).
+- **LMSys-Chat-1M:** Subject to its upstream dataset terms and is not redistributed in this repository.

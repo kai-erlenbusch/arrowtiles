@@ -52,6 +52,12 @@ def check_spec_version(metadata: dict[str, Any], path_label: str = "<archive>") 
             f"Unsupported ArrowTiles major version {ver!r} in '{path_label}' (reader supports 0.x)"
         )
 
+    tiling = metadata.get("tiling")
+    if tiling is not None and tiling != "quadtree-2d":
+        raise ValueError(
+            f"Unsupported ArrowTiles tiling {tiling!r} in '{path_label}' (reader supports 'quadtree-2d')"
+        )
+
     return False, ver
 
 

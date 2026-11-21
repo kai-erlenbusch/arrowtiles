@@ -7,6 +7,7 @@ import sys
 from arrowtiles._zstd import zstd_decompress
 from arrowtiles.builder import (
     SPEC_FORMAT,
+    SPEC_TILING,
     SPEC_VERSION,
     ArrowTilesBuilder,
     build_gaia,
@@ -27,6 +28,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "SPEC_FORMAT",
+    "SPEC_TILING",
     "SPEC_VERSION",
     "ArrowTilesBuilder",
     "ArrowTilesReader",
