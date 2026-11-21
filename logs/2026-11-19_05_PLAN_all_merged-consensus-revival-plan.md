@@ -23,10 +23,11 @@ flowchart TD
     P1 --> P2["Phase 2: 1-Hilbert-at-max_zoom Bit-Shift Bucketer + SQL Tie-Break + Completeness Suite"]
     P2 --> P3["Phase 3: Seeded Random vs Column Priority + Proportional vs Even-Coverage Sampling"]
     P3 --> P4["Phase 4 (Gate): Empirical Browser Benchmark (.arrowtiles vs 2 Parquet Layouts) + Renderer Gate"]
-    P4 --> P5a["Phase 5a: Pure Structural Viewer Refactor (Zero Behavior Change)"]
+    P4 --> P5a["Phase 5a: Pure Structural Refactor + Embeddable Library Boundary & docs/API.md (D11)"]
     P5a --> P5b["Phase 5b: Discrete Viewer Fixes (2x-u32 Atomics, CPU f64 RTC, Load Token, Eviction)"]
     P5b --> P6["Phase 6: GPU Buffer Lifecycle & Real-GPU __gpuStats Playwright Suite"]
     P6 --> P7["Phase 7: Race-Free Per-Slot 12+20-Bit GPU PickingLayer (On-Demand row_id)"]
+    P7 --> P8["Phase 8: Embeddable Library Packaging, Public-API Demo App & Single-HTML Example (D11 / D12)"]
 ```
 
 ---
@@ -55,10 +56,13 @@ flowchart TD
 | **D4** | Categorical columns | **Locked: Plain integer codes** (`UInt8` up to 256 categories, else `UInt16`) + `stats[col].categories` in metadata; `NULL` masked via Arrow `nullBitmap -> NaN` (never mapped to category `0`); viewer supports 64-color palette + deterministic hue wrap | Phase 1 |
 | **D5** | Leaf-tile size (`tile_capacity` vs. `max_tile_rows`) | **Locked:** Two distinct caps — `tile_capacity` (e.g. `100,000`) at `z < nominal_max_zoom`, and `max_tile_rows` (e.g. `262,144`) at `z >= nominal_max_zoom` spilling overflow up to `z = 20`; header `max_zoom` records `actual_max_z`; fails if a `z = 20` tile overflows unless `--allow-oversize-leaves` is passed | Phase 1 |
 | **D6** | Sample files (`<20 MB` each) | **Locked:** Keep `samples/*.arrowtiles` gitignored; generate Gaia/LMSys samples via `scripts/build_samples.py` (skipping tests when local source data is absent) and build the edge-case sample synthetically inside `pytest` | Phase 1 |
-| **D7** | Default sampling mode (`proportional` vs. `even_coverage`) | **⛔ Ask owner in Phase 3** after viewing LMSys in both modes | Phase 3 |
+| **D7** | Default sampling mode (`proportional` vs. `even_coverage`) | **Locked (`2026-11-20`):** `proportional` as generic default (`DEFAULT_TILE_CAPACITY = 25,000`); `--preset gaia` stays `even_coverage` (`100,000`) | Phase 3 / 4 |
+| **D7a** | High-cardinality free-text string columns (`distinct > max_categories`) | **Locked (`2026-11-19`):** Drop by default unless named in `columns=`, log notice, and record `"dropped_columns"` in metadata | Phase 2 |
 | **D8** | Keep PMTiles + Arrow container vs. switch to Parquet | **⛔ Ask owner in Phase 4** after benchmark | Phase 4 |
 | **D9** | Compute-only point renderer vs. Dual-Renderer | **⛔ Ask owner before Phase 5a** | Pre-Phase 5 |
-| **D10** | Keep per-point ACES+sRGB curve (default) vs. Resolve-pass tone mapping | **⛔ Ask owner with D9** (default: keep per-point curve) | Pre-Phase 5 |
+| **D10** | Keep per-point ACES+sRGB curve (default) vs. Resolve-pass tone mapping | **⛔ Ask owner with D9** (default: keep per-point curve; categorical Mode 1 already uses Resolve log-density) | Pre-Phase 5 |
+| **D11** | Viewer distribution architecture | **Locked (`2026-11-20`):** Deepgraph viewer ships as an **embeddable npm library + demo app** (Deepscatter / cosmos.gl model); library modules stay DOM/GUI/URL/Gaia-free, `docs/API.md` drafted & reviewed in Phase 5a, packaged in Phase 8 | Phase 5a & Phase 8 |
+| **D12** | npm package name & npm publishing | **⛔ Owner decision in Phase 8 — do NOT publish** | Phase 8 |
 
 ---
 
@@ -153,9 +157,20 @@ flowchart TD
 
 ---
 
-## 7. Phase 5a (Pure Refactor) & Phase 5b (Discrete Viewer Fixes)
+## 7. Phase 5a (Pure Refactor + Library Boundary `D11`) & Phase 5b (Discrete Viewer Fixes)
 
-- **Phase 5a (Zero Behavior Change):** Split `src/main.ts` (`< 150` lines) into `DatasetSession`, `ViewState`, `RenderLoop`, `ControlsPanel`, and `ViewerLayer` (deriving `PMTilesClient` `flipY` and `Scatterplot` `yRange` from a single canonical `ViewState.effectiveFlipY`); isolate Three.js internals; declare `fflate`, add `typecheck`, and (`⛔` after confirmation) remove unused deps (`@sentry/*`, `gl-matrix`, `stats.js`) and dead `ui.ts`, `counter.ts`, `compute_test.mjs`. Verify identical before/after behavior on both samples.
+- **Phase 5a (Zero Behavior Change + Public Library Boundary per `D11`):**
+  1. Split `src/main.ts` (`< 150` lines) into **library modules** (`DatasetSession`, `ViewState`, `RenderLoop`, `ViewerLayer`, deriving `PMTilesClient` `flipY` and `Scatterplot` `yRange` from a single canonical `ViewState.effectiveFlipY`) and **demo-app modules** (`ControlsPanel` / `lil-gui`, URL query/drop handling, telemetry HUD).
+  2. **Strict Library Boundary (`D11`):** Library modules (`DatasetSession`, `ViewState`, `RenderLoop`, `ViewerLayer`) **must not** import `lil-gui`, read URL params (`window.location`), or touch the DOM beyond the `container` element passed in. `ControlsPanel` / `lil-gui` and URL handling belong to the demo app only.
+  3. **Zero Hardcoded Dataset Special Cases in Library Code (`D11`):** Remove Gaia-specific name/schema heuristics from library code; dataset-specific behavior (projection, optical mode, science lenses, fallback bounds) comes strictly from `metadata.view` or an explicit `preset` object passed by the caller/demo app.
+  4. **Draft Minimal Public API Spec (`docs/API.md`, do not publish):** Draft the embeddable library contract, e.g.:
+     ```ts
+     const plot = await Deepgraph.create(container, { url, encoding: { color, size, x, y }, preset? });
+     plot.setEncoding({ ... });
+     plot.on('click' | 'hover' | 'select', handler);
+     plot.destroy();
+     ```
+  5. Isolate Three.js internals; declare `fflate`, add `typecheck`, and (`⛔` after confirmation) remove unused deps (`@sentry/*`, `gl-matrix`, `stats.js`) and dead `ui.ts`, `counter.ts`, `compute_test.mjs`. Verify identical before/after behavior on both samples, and **stop for review of `docs/API.md` alongside the Phase 5a refactor** before starting Phase 5b.
 - **Phase 5b (Discrete Fixes, Each Individually Checked):**
   1. Widen `accumBuffer` to `2 × u32` (`8 B/px`, checking `maxStorageBufferBindingSize` at 5K), separating `valSum` and `wSum | lineHits` in Modes 2 & 4 (and `16-bit` channels in Modes 0 & 1), replacing `rawSize <= 0.0` with `!(rawSize == rawSize)` so negative magnitudes are never culled, and keeping per-point curve unless `D10` changes it.
   2. CPU `Float64` Relative-to-Center tile offsets uploaded as `f32` (`F-07`) + Mode 4 `cpy < screenHeight` guard.
@@ -178,3 +193,12 @@ flowchart TD
 - On click (`< 4 px` cursor movement), dispatch a $9 \times 9\text{ px}$ cursor-window compute pass writing to a **1 KB `slotBestHit: array<atomic<u32>, 256>`** buffer (1 word per slot, `0 B` per-frame overhead).
 - Each candidate packs **12-bit distance in sixteenths of a pixel + 20-bit row index** (`(dist16th_u12 << 20) | rawRowIdx_u20`, supporting up to `1,048,575` rows/tile; dynamically falling back if `--allow-oversize-leaves` exceeds $2^{20}$), un-scrambling the 2,048-row bijection and matching shader hash jitter, via a **single race-free `atomicMin`** per slot.
 - CPU reads back 1 KB, selects the best hit across active slots **breaking distance ties by coarser zoom level `z` first** (higher global priority) and `rawRowIdx` second, then fetches/decodes `row_id` + full row attributes from that single tile on demand (`0 MB` idle worker RAM)—verified against `arrowtiles.reader` by `row_id` on both samples.
+
+---
+
+## 10. Phase 8: Embeddable Library Packaging & Public-API Demo (`D11` / `⛔ D12`)
+
+1. **Library Entry Point & Vite ES Module Build:** Clean public entry point + generated TypeScript declaration files (`.d.ts`), Vite library mode (`ES` module build), and documented `peerDependencies` vs. bundled dependency decisions (including worker/WASM asset handling).
+2. **Demo App Rebuilt Strictly on Public API:** Rebuild the demo application (`ControlsPanel`, presets, URL/drop loader, HUD) to import **only** from the public library entry point (zero deep internal imports)—serving as the acceptance proof that the public API is complete and ergonomic.
+3. **Minimal Single-File Embed Example, Docs & License Check:** Provide a standalone single-HTML embed example, finalize `docs/API.md`, and run a `LICENSE` / third-party dependency license check (without modifying `LICENSE` files).
+4. **Stop Gate `⛔ D12` (Package Name & Publishing):** Package name and npm publishing are explicit owner decisions (`⛔ D12`); **do not run `npm publish`**.

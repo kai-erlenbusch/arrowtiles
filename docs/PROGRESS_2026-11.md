@@ -408,3 +408,16 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
   1. **⛔ `D8` (Container Choice):** Keep **`.arrowtiles` (`v0.1`)** as our primary spatial pyramid container (pairing wide 30+-column tables with `--columns` or `v0.2` `"layers"` / sidecar Parquet attribute lookup), or pivot to sorted Parquet?
   2. **⛔ `D9` (Renderer Architecture for Phases 5–6):** Unify on **`ComputeRasterizer` ("Compute-Only")** (moving 2s axis transitions into WGSL and retiring `Scatterplot` Three.js instanced point meshes for clean direct `GPUBuffer` VRAM management), or keep Dual-Renderer (`Compute (Atomic)` + `Hardware Instanced`)?
   3. **⛔ `D10` (Continuous / Optical Tone Mapping):** Keep per-point ACES + sRGB transfer in Gaia Mode 0 & Star Trails Mode 3 (widening channels to `16-bit` in Phase 5b to preserve the tuned Milky Way look), or move continuous/optical tone mapping into the Resolve pass?
+
+
+## 2026-11-20 — Plan Update (`D11` / `⛔ D12`): Embeddable npm Library + Demo App Architecture & Phase 8 Packaging
+
+- **Done:**
+  1. **Recorded Owner Decision `D11` (`2026-11-20`) in `logs/2026-11-19_05_PLAN_all_merged-consensus-revival-plan.md`:** Deepgraph viewer ships as an **embeddable npm library + demo app** (Deepscatter / cosmos.gl model).
+  2. **Updated Phase 5a in `05_PLAN`:**
+     - Library modules (`DatasetSession`, `ViewState`, `RenderLoop`, `ViewerLayer`) must not import `lil-gui`, read URL params, or touch the DOM beyond the `container` element passed in (`ControlsPanel` / `lil-gui` and URL handling belong strictly to the demo app).
+     - Zero Gaia special cases in library code: dataset behavior comes strictly from `metadata.view` or a caller-provided `preset` object.
+     - Draft (do not publish) minimal public API contract in `docs/API.md` (`Deepgraph.create(container, { url, encoding, preset? })`, `plot.setEncoding(...)`, `plot.on('click' | 'hover' | 'select', handler)`, `plot.destroy()`), and **stop for review of `docs/API.md` alongside the Phase 5a refactor**.
+  3. **Added Phase 8 (Packaging, after Phase 7) & Stop Gate `⛔ D12` in `05_PLAN`:**
+     - Library entry point + TypeScript `.d.ts` declarations, Vite ES module library build, documented peer/bundled dependency decisions, demo app rebuilt strictly on the public API (no deep imports), single-HTML embed example, finalized API docs, and `LICENSE` check.
+     - Package name and npm publishing gated on explicit owner decision **`⛔ D12`** (never publish without approval).
