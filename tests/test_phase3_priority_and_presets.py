@@ -381,3 +381,73 @@ def test_tile_capacity_and_sampling_explicit_passthrough(tmp_path: Path) -> None
         # In even_coverage (16x16 grid over [0,1]^2), (0,0) + 298 cluster points share 1 corner cell
         # and (1,1) occupies the opposite corner cell -> root tile claims exact 2 rows!
         assert r_even.read_tile(0, 0, 0).num_rows == 2
+
+
+def test_sparse_utinyint_usmallint_categorical_cols(tmp_path: Path) -> None:
+    """Regression test: sparse/1-based UTINYINT and USMALLINT columns in categorical_cols remap to dense 0..K-1."""
+    src_pq = tmp_path / "sparse_unsigned_cats.parquet"
+    con = duckdb.connect()
+    con.execute(
+        f"""
+        COPY (
+            SELECT
+                CAST(i AS DOUBLE) * 0.01 AS x,
+                CAST(99 - i AS DOUBLE) * 0.01 AS y,
+                CASE
+                    WHEN i % 4 == 0 THEN NULL
+                    WHEN i % 4 == 1 THEN CAST(10 AS UTINYINT)
+                    WHEN i % 4 == 2 THEN CAST(20 AS UTINYINT)
+                    ELSE CAST(30 AS UTINYINT)
+                END AS sparse_u8,
+                CASE
+                    WHEN i % 3 == 0 THEN CAST(100 AS USMALLINT)
+                    WHEN i % 3 == 1 THEN CAST(250 AS USMALLINT)
+                    ELSE CAST(1000 AS USMALLINT)
+                END AS sparse_u16
+            FROM range(100) AS t(i)
+        ) TO '{src_pq.as_posix()}' (FORMAT PARQUET)
+        """
+    )
+    con.close()
+
+    out_at = tmp_path / "sparse_unsigned_cats.arrowtiles"
+    build_generic(
+        input_parquet=src_pq,
+        output_path=out_at,
+        x_col="x",
+        y_col="y",
+        categorical_cols=["sparse_u8", "sparse_u16"],
+        max_capacity=50,
+        max_zoom=4,
+        temp_dir=tmp_path / "tmp_sparse",
+        show_progress=False,
+    )
+
+    val = validate_file(out_at, expected_input_rows=100)
+    assert val.ok, val.errors
+
+    with ArrowTilesReader(out_at) as reader:
+        meta = reader.metadata()
+        assert meta["stats"]["sparse_u8"] == {
+            "type": "categorical",
+            "categories": ["10", "20", "30"],
+            "null_count": 25,
+        }
+        assert meta["stats"]["sparse_u16"] == {
+            "type": "categorical",
+            "categories": ["100", "250", "1000"],
+            "null_count": 0,
+        }
+        root_raw = reader.read_tile(0, 0, 0, decode_categories=False)
+        assert root_raw is not None
+        u8_codes = [v for v in root_raw["sparse_u8"].to_pylist() if v is not None]
+        assert set(u8_codes) == {0, 1, 2}
+        u16_codes = root_raw["sparse_u16"].to_pylist()
+        assert set(u16_codes) == {0, 1, 2}
+
+        root_dec = reader.read_tile(0, 0, 0, decode_categories=True)
+        assert root_dec is not None
+        u8_labels = [v for v in root_dec["sparse_u8"].to_pylist() if v is not None]
+        assert set(u8_labels) == {"10", "20", "30"}
+        u16_labels = root_dec["sparse_u16"].to_pylist()
+        assert set(u16_labels) == {"100", "250", "1000"}

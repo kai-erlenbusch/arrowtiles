@@ -421,3 +421,42 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
   3. **Added Phase 8 (Packaging, after Phase 7) & Stop Gate `⛔ D12` in `05_PLAN`:**
      - Library entry point + TypeScript `.d.ts` declarations, Vite ES module library build, documented peer/bundled dependency decisions, demo app rebuilt strictly on the public API (no deep imports), single-HTML embed example, finalized API docs, and `LICENSE` check.
      - Package name and npm publishing gated on explicit owner decision **`⛔ D12`** (never publish without approval).
+
+
+## 2026-11-20 — Pre-Phase-5a Follow-Ups & Phase 5a (finish, paused at `docs/API.md` & `⛔` Dead-Code/Dep Cleanup Review): Locked `D8`/`D9`/`D10`, Throttled WAN Benchmark (`50 ms` RTT, `50 Mbps`), Sparse `UTINYINT` Fix, Pure Embeddable Library Split (`D11`), and `docs/API.md` Draft
+
+- **Done:**
+  1. **Locked Owner Decisions `D8`, `D9`, and `D10` (`2026-11-20`) in `05_PLAN`, `SPEC.md`, and `BENCHMARK_parquet_vs_arrowtiles.md`:**
+     - **`D8`:** Kept **`.arrowtiles` (`v0.1`)** as the primary spatial pyramid container, promoted column-group `"layers"` sidecars for wide tables to a **required `v0.2` roadmap item** (`SPEC.md` §6.4), locked standalone `.arrowtiles` `row_id` + retained-column decoding in Phase 7 (`resolveRowAttributes` hook for optional sidecar Parquet cold attributes), committed the reproducible browser benchmark harness under [`scripts/bench/`](file:///D:/exploratory/duckdb-extension/duckdb-arrowtiles/scripts/bench), and ran the throttled WAN (`50 ms` RTT, `50 Mbps`) `lmsys_full` benchmark.
+     - **`D9`:** Locked **Compute-Only** for Phase 5b (retiring `Scatterplot` Three.js instanced meshes & `WebGPUAdapter.ts`, owning `GPUBuffer`s directly, moving 2s axis transitions into WGSL, and adding a plain-WebGPU point highlight overlay in Phase 7/8).
+     - **`D10`:** Locked **Split-by-Mode** for Phase 5b (per-point ACES + sRGB scoped to Gaia optical Modes 0 & 3; generic numeric Mode 1 moved to Resolve-pass log-density tone mapping alongside categorical Mode 1; race-free interval-gated `prevW = atomicAdd(&accumBuf[base2], w)` in `2 × u32` `8 B/px` `accumBuffer` + adapter `maxStorageBufferBindingSize`).
+  2. **Fixed Sparse/1-Based `UTINYINT` / `USMALLINT` `--categorical-cols` Remapping (`arrowtiles/builder.py:496`):**
+     - Removed `and self._base_duckdb_type(schema_map[col]) not in ("UTINYINT", "USMALLINT")` so `cat_lookup_tables` is always joined whenever `col in cat_lookup_tables`, ensuring sparse unsigned integer category IDs (e.g. `[10, 20, 30]`, `[100, 250, 1000]`) remap cleanly to dense `0..K-1` codes.
+     - Added regression test `test_sparse_utinyint_usmallint_categorical_cols` in `tests/test_phase3_priority_and_presets.py`.
+  3. **Executed 5-Run Throttled WAN Benchmark (`50 ms` RTT, `50 Mbps` via Chrome CDP on `lmsys_full`) & Cleaned Temp Data:**
+     - Appended Section `5.4` to `docs/BENCHMARK_parquet_vs_arrowtiles.md` and deleted `samples/_tmp_phase4_parquet_bench/` afterward.
+  4. **Executed Phase 5a — Pure Structural Refactor + `D11` Embeddable Library Boundary + `docs/API.md` Draft (`deepgraph-arrowtiles-sandbox`):**
+     - Split `src/main.ts` (`1,112` lines -> **`112` lines**) into clean **library modules** (`src/lib/types.ts`, `src/lib/DatasetSession.ts`, `src/lib/ViewState.ts`, `src/lib/RenderLoop.ts`, `src/lib/ViewerLayer.ts`, `src/index.ts`) and **demo-app modules** (`src/demo/gaiaPreset.ts`, `src/demo/ControlsPanel.ts`, `src/main.ts`).
+     - Enforced strict `D11` boundary: zero `lil-gui`, zero `window.location` / `URLSearchParams`, zero DOM access outside `container` (with `ResizeObserver` + container-relative wheel zoom + full `Renderer.dispose()` cleanup), zero Three.js types in public API signatures, and zero Gaia strings/heuristics in library modules (`ViewState.effectiveFlipY` drives both `PMTilesClient` and `Scatterplot` `yRange`).
+     - Added `"typecheck": "tsc --noEmit"` and explicit `"fflate": "^0.8.3"` in `package.json`, and drafted [`docs/API.md`](file:///D:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox/docs/API.md) for review.
+
+- **Evidence:**
+  - **Writer `pytest` Suite (`49 passed, 1 skipped`):**
+    - Command: `& "D:\exploratory\duckdb-extension\duckdb-arrowtiles\.venv\Scripts\python.exe" -m pytest -v -rs -p no:cacheprovider`
+    - Output: **`49 passed, 1 skipped in 10.94s`** (including `test_sparse_utinyint_usmallint_categorical_cols`).
+  - **Throttled WAN Benchmark (`lmsys_full`, `50 ms` RTT, `50 Mbps`, `5` runs Median / P95):**
+    - `proj_3_of_38`: `.arrowtiles` (`36`-col monolithic) `HS = 157.3 / 159.3 ms`, `TTFF = 7,223.3 / 7,265.8 ms` (`40.39 MiB`, `23` reqs), `Deep = 4,208.1 / 4,220.4 ms`; `parquet_tile_rg` `HS = 684.0 / 693.7 ms`, **`TTFF = 1,322.5 / 1,332.7 ms`** (`3.13 MiB`, `46` reqs), **`Deep = 514.1 / 541.4 ms`**; `parquet_page_idx` `HS = 258.9 / 264.4 ms`, `TTFF = 1,901.7 / 1,940.4 ms` (`4.62 MiB`, `113` reqs — slower than `parquet_tile_rg` due to `50 ms` RTT amplification), `Deep = 1,273.4 / 1,301.8 ms` (`90` reqs).
+    - `full_schema_36`: `.arrowtiles` **`HS = 154.7 / 157.3 ms`**, **`TTFF = 7,238.9 / 7,300.7 ms`** (`23` reqs), `Deep = 4,220.3 / 4,243.8 ms`; `parquet_tile_rg` `HS = 523.9 / 574.8 ms`, `TTFF = 7,401.0 / 7,446.2 ms` (`38` reqs), `Deep = 4,142.8 / 4,162.7 ms`; `parquet_page_idx` `HS = 245.6 / 257.4 ms`, **`TTFF = 16,151.9 / 16,413.5 ms`** (`839` reqs — `2.23x` slower), `Deep = 11,957.4 / 12,166.4 ms` (`684` reqs — `2.83x` slower).
+  - **Phase 5a Viewer Verification (`npm run typecheck`, `npm run build`, `D11` Grep, Live Chrome WebGPU `verify_phase5a.mjs`):**
+    - `src/main.ts` line count: **`112` lines** (`< 150`).
+    - `D11` boundary grep across `src/lib/*.ts` and `src/index.ts` for `lil-gui`, `window.location`, `URLSearchParams`, `getElementById`, `querySelector`, `document.body`, and Gaia constants: **`0` matches**.
+    - `npm run typecheck` (`tsc --noEmit`) & `npm run build`: **`exit code 0`**.
+    - Live headed Chrome WebGPU (`verify_phase5a.mjs`): verified `gaia_full.arrowtiles` + `?file=//` protocol-relative URL rejection, `gaia_sample.arrowtiles` (`phot_g_mean_mag ASC` + HR Diagram `effectiveFlipY = true` -> Sky in Colour `effectiveFlipY = false`), `lmsys_sample.arrowtiles`, `lmsys_d7_proportional_25k.arrowtiles` (`plot.setEncoding({ color: { field: 'clusters_14' } })`), and standalone `Deepgraph.create(box, { url })` + `plot.destroy()` in an isolated `640x480` `<div>` (`lilGuiInDom: 0`, `maxLoadedPts: 97,163`, `canvasCountAfter: 0`, `pageErrors: []`, `consoleErrors: []`).
+
+- **Not done / failed:**
+  - **`git push` / `npm publish`:** Not run (holding local commits on `revival/2026-11-wip` per `⛔` guardrails).
+  - **Unused dependencies & dead files (`⛔` confirmation requested before removal):** Retained `@sentry/browser`, `@sentry/tracing`, `gl-matrix`, `@types/gl-matrix`, `stats.js`, `@types/stats.js`, and dead files `src/counter.ts`, `src/ui.ts`, `tests/compute_test.mjs` pending owner confirmation below.
+
+- **Questions for owner (Phase 5a Stop Gate before Phase 5b):**
+  1. **`docs/API.md` & Phase 5a Library Split (`D11`):** Does the drafted public API in `deepgraph-arrowtiles-sandbox/docs/API.md` (`Deepgraph.create(container, { url, encoding, preset, resolveRowAttributes })`, `setEncoding`, `load`, `on('click' | 'hover' | 'select' | 'telemetry' | 'load' | 'error')`, `destroy()`) look good to carry forward into Phases 5b–8?
+  2. **⛔ Unused Dependencies & Dead Files Confirmation (`05_PLAN` §7.5):** Confirmed `0` imports across `src/` for `@sentry/browser`, `@sentry/tracing`, `gl-matrix`, `@types/gl-matrix`, `stats.js`, `@types/stats.js`, `src/counter.ts`, `src/ui.ts`, and `tests/compute_test.mjs` (`p-queue` *is* actively used in `PMTilesClient.ts` and stays). Confirm removing those 6 unused packages and 3 dead files at the start of **Phase 5b**?

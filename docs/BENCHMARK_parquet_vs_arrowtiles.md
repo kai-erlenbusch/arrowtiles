@@ -1,7 +1,7 @@
 # Phase 4 Benchmark Report — `.arrowtiles` (`v0.1`) vs. Sorted HTTP-Range Parquet
 
 **Date:** `2026-11-20`  
-**Status:** Complete — Ready for Owner Gate Decisions **`⛔ D8`**, **`⛔ D9`**, and **`⛔ D10`**
+**Status:** Complete — **`D8`**, **`D9`**, and **`D10` Locked (`2026-11-20`)**; Throttled WAN (`50 ms` RTT, `50 Mbps`) `lmsys_full` rows appended & reproducible harness committed in [`scripts/bench/`](../scripts/bench/)
 
 ---
 
@@ -115,7 +115,24 @@ Instrumenting `PMTilesClient.fetchTelemetry` separately across the **21-tile col
 ### 5.3 Why Each Format Behaves the Way It Does
 1. **Why `parquet_tile_rg` collapses at 100M+ rows (`5.0s` handshake, `121–154 MB` JS heap):** Parquet stores a flat monolithic `FileMetaData` Thrift footer listing every `ColumnChunk` of every `RowGroup`. At `9,573` tiles × `11` columns = `105,303` column chunks, the footer hits `8.12 MiB` (`~165 MiB` at 1.8B Gaia). By contrast, PMTiles partitions its Hilbert directory into a `16 KiB` root directory + lazy leaf directories (`367 KiB` total even at 1.8B rows!).
 2. **Why `parquet_page_idx` multiplies HTTP Range requests by `6×`–`36×` (`113`–`839` requests vs. `23`):** For every tile straddling a `250k`-row Row Group, `hyparquet` must fetch each projected column's `OffsetIndex` plus separate non-adjacent byte ranges per column chunk (`21 tiles × 3 cols × ~2 = 113+` requests, and `839` requests at 37 cols!). Over cloud object storage (`Cloudflare R2` / `S3` with `25–60 ms` RTT per wave), `147–839` range requests suffer severe round-trip amplification compared to `.arrowtiles`'s **`1` contiguous range read per tile**.
-3. **Where Parquet wins (`lmsys_full` 3-of-38 projection):** When an archive packs `36` payload columns into every tile (`lmsys_full`) and the viewer only needs `3` columns (`x, y, clusters_14`), `.arrowtiles` downloads `40.39 MiB` instead of `3.13–4.62 MiB`. That gap disappears when wide datasets either project visual columns at build time (`--columns model,clusters_14,num_of_tokens`) or split cold/wide columns into `SPEC.md` §6.4 `"layers"` sidecar `.arrowtiles` archives (or a sidecar Parquet lookup table for click-inspection!).
+3. **Where Parquet wins (`lmsys_full` 3-of-38 projection):** When an archive packs `36` payload columns into every tile (`lmsys_full`) and the viewer only needs `3` columns (`x, y, clusters_14`), `.arrowtiles` downloads `40.39 MiB` instead of `3.13–4.62 MiB`. That gap disappears when wide datasets either project visual columns at build time (`--columns model,clusters_14,num_of_tokens`) or split cold/wide columns into `SPEC.md` §6.4 `"layers"` sidecar `.arrowtiles` archives (now a **required `v0.2` roadmap item** under `D8`).
+
+### 5.4 Throttled WAN Benchmark (`50 ms` RTT, `50 Mbps` via Chrome CDP on `lmsys_full` — `D8` Condition #3)
+
+To verify real-network behavior beyond loopback I/O, we re-ran both `lmsys_full` (`2,835,490` rows, `221` tiles, `36` payload cols) workloads under Chrome CDP `Network.emulateNetworkConditions` (`latency: 50 ms`, `downloadThroughput: 50 Mbps = 6,250,000 B/s`, `uploadThroughput: 50 Mbps`, `5` runs per format, worker WASM pre-warmed prior to throttling; harness in [`scripts/bench/run_phase4_browser_bench.mjs`](../scripts/bench/run_phase4_browser_bench.mjs)):
+
+| Workload (`50 ms` RTT, `50 Mbps`) | Format | Handshake `ms` (`Wire KB`, `Reqs`) | Overview TTFF `ms` (`Z=0..2`) | Overview Wire `MiB` (`Reqs`) | Overview Worker CPU Sum `ms` | Deep-Zoom Burst `ms` | Deep-Zoom Wire `MiB` (`Reqs`) | Deep Worker CPU Sum `ms` | Peak JS + Buffers `MB` |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`lmsys_full` — 3-of-38 Projection** (`x_u16, y_u16, clusters_14`) | **`.arrowtiles`** (`36`-col monolithic) | **`157.3` / `159.3`** (`18.3 KB`, `2`) | `7223.3` / `7265.8` | `40.39` (`23`) | `405.6` / `450.7` | `4208.1` / `4220.4` | `24.11` (`16`) | `160.7` / `179.6` | **`6.0` / `6.0`** |
+| | `parquet_tile_rg` | `684.0` / `693.7` (`815.1 KB`, `4`) | **`1322.5` / `1332.7`** | **`3.13` (`46`)** | **`92.6` / `97.5`** | **`514.1` / `541.4`** | **`1.30` (`32`)** | **`17.7` / `18.7`** | `15.7` / `15.8` |
+| | `parquet_page_idx` | `258.9` / `264.4` (`521.4 KB`, `3`) | `1901.7` / `1940.4` | `4.62` (`113`) | `92.7` / `104.7` | `1273.4` / `1301.8` | `2.62` (`90`) | `29.4` / `30.9` | `6.2` / `6.2` |
+| **`lmsys_full` — Full 36-Col Schema** (`37` cols) | **`.arrowtiles`** | **`154.7` / `157.3`** (`18.3 KB`, `2`) | **`7238.9` / `7300.7`** | **`40.39` (`23`)** | `819.2` / `852.1` | `4220.3` / `4243.8` | `24.11` (`16`) | `271.3` / `288.7` | **`96.6` / `96.6`** |
+| | `parquet_tile_rg` | `523.9` / `574.8` (`815.1 KB`, `4`) | `7401.0` / `7446.2` | `40.43` (`38`) | **`328.9` / `346.0`** | **`4142.8` / `4162.7`** | **`23.64` (`24`)** | **`173.1` / `187.2`** | `100.4` / `100.4` |
+| | `parquet_page_idx` | `245.6` / `257.4` (`521.4 KB`, `3`) | `16151.9` / `16413.5` | `57.74` (`839`) | `460.8` / `470.6` | `11957.4` / `12166.4` | `36.76` (`684`) | `266.9` / `362.3` | **`96.6` / `96.6`** |
+
+#### Takeaways from the `50 ms` RTT / `50 Mbps` Throttled Run
+1. **Request-amplification rank reversal between the two Parquet layouts:** On unthrottled loopback, `parquet_page_idx` beat `parquet_tile_rg` on 3-column TTFF (`158.1 ms` vs. `235.6 ms`). Under `50 ms` RTT, `parquet_page_idx`'s **`113` range requests (`~19` waves across 6 connections)** invert that ranking: `parquet_page_idx` slows to **`1,901.7 ms` (`1,273.4 ms` deep zoom)** vs. `parquet_tile_rg`'s **`1,322.5 ms` (`514.1 ms` deep zoom)**, and explodes to **`16.15 seconds` (`839` requests)** on the full 36-column read (`2.23×` slower than `.arrowtiles`).
+2. **Exact bandwidth validation of `v0.2` `"layers"` (`D8` Condition #1):** On a `50 Mbps` (`6.25 MB/s`) link, transferring all 36 columns in monolithic `.arrowtiles` (`40.39 MiB`) takes **`7.22 s`** regardless of whether 3 or 36 columns are rendered, whereas 3-column projection (`~3.1 MiB`) completes in **`1.32 s`** (`5.5×` faster). Keeping the primary `.arrowtiles` geometry/visual archive lean (`--columns` in `v0.1`, plus co-tiled column-group `"layers"` sidecars in `v0.2`) eliminates that `5.9 s` wide-table transfer penalty while keeping `.arrowtiles`'s **`155 ms` `O(1)` handshake (`4.4×` faster than `parquet_tile_rg` even at 221 tiles, and `>30×` faster at 100M+ rows)** and single-range tile reads.
 
 ---
 

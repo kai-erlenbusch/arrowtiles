@@ -58,9 +58,9 @@ flowchart TD
 | **D6** | Sample files (`<20 MB` each) | **Locked:** Keep `samples/*.arrowtiles` gitignored; generate Gaia/LMSys samples via `scripts/build_samples.py` (skipping tests when local source data is absent) and build the edge-case sample synthetically inside `pytest` | Phase 1 |
 | **D7** | Default sampling mode (`proportional` vs. `even_coverage`) | **Locked (`2026-11-20`):** `proportional` as generic default (`DEFAULT_TILE_CAPACITY = 25,000`); `--preset gaia` stays `even_coverage` (`100,000`) | Phase 3 / 4 |
 | **D7a** | High-cardinality free-text string columns (`distinct > max_categories`) | **Locked (`2026-11-19`):** Drop by default unless named in `columns=`, log notice, and record `"dropped_columns"` in metadata | Phase 2 |
-| **D8** | Keep PMTiles + Arrow container vs. switch to Parquet | **⛔ Ask owner in Phase 4** after benchmark | Phase 4 |
-| **D9** | Compute-only point renderer vs. Dual-Renderer | **⛔ Ask owner before Phase 5a** | Pre-Phase 5 |
-| **D10** | Keep per-point ACES+sRGB curve (default) vs. Resolve-pass tone mapping | **⛔ Ask owner with D9** (default: keep per-point curve; categorical Mode 1 already uses Resolve log-density) | Pre-Phase 5 |
+| **D8** | Keep PMTiles + Arrow container vs. switch to Parquet | **Locked (`2026-11-20`):** Keep **`.arrowtiles` (`v0.1`)** as primary pyramid container, with 3 conditions: (1) column-group `"layers"` for wide tables become a **required `v0.2` roadmap item**; (2) Phase 7 decodes `row_id` + retained tile columns directly from `.arrowtiles` on demand (zero Parquet dependency in core library), exposing `{ rowId, attributes }` + optional `row_id` sidecar Parquet lookup hook for dropped cold columns; (3) append throttled (`50 ms` RTT, `50 Mbps`) `lmsys_full` rows to `BENCHMARK_parquet_vs_arrowtiles.md` and commit harness in `scripts/bench/` | Phase 4 |
+| **D9** | Compute-only point renderer vs. Dual-Renderer | **Locked (`2026-11-20`):** **Compute-Only** (executed in **Phase 5b** after Phase 5a's zero-behavior-change split): retire `Scatterplot` instanced meshes & `WebGPUAdapter.ts`, own `GPUBuffer`s directly in `ComputeRasterizer`/`TileGpuStore`, move 2s axis transitions into WGSL, and use a small plain-WebGPU overlay for large/highlighted points in Phase 7/8 | Pre-Phase 5 |
+| **D10** | Keep per-point ACES+sRGB curve (default) vs. Resolve-pass tone mapping | **Locked (`2026-11-20`):** **Split by mode (in Phase 5b):** Gaia optical Modes 0 & 3 keep per-point ACES+sRGB (scoped to Gaia preset); generic numeric Mode 1 moves to Resolve-pass log-density tone mapping (reusing categorical resolve); fix `splat_cat_pixel` TOCTOU carry race via interval gating on `prevW = atomicAdd(...)` in `2 × u32` (`8 B/px`) `accumBuffer` + adapter `maxStorageBufferBindingSize` | Pre-Phase 5 |
 | **D11** | Viewer distribution architecture | **Locked (`2026-11-20`):** Deepgraph viewer ships as an **embeddable npm library + demo app** (Deepscatter / cosmos.gl model); library modules stay DOM/GUI/URL/Gaia-free, `docs/API.md` drafted & reviewed in Phase 5a, packaged in Phase 8 | Phase 5a & Phase 8 |
 | **D12** | npm package name & npm publishing | **⛔ Owner decision in Phase 8 — do NOT publish** | Phase 8 |
 
@@ -171,13 +171,13 @@ flowchart TD
      plot.destroy();
      ```
   5. Isolate Three.js internals; declare `fflate`, add `typecheck`, and (`⛔` after confirmation) remove unused deps (`@sentry/*`, `gl-matrix`, `stats.js`) and dead `ui.ts`, `counter.ts`, `compute_test.mjs`. Verify identical before/after behavior on both samples, and **stop for review of `docs/API.md` alongside the Phase 5a refactor** before starting Phase 5b.
-- **Phase 5b (Discrete Fixes, Each Individually Checked):**
-  1. Widen `accumBuffer` to `2 × u32` (`8 B/px`, checking `maxStorageBufferBindingSize` at 5K), separating `valSum` and `wSum | lineHits` in Modes 2 & 4 (and `16-bit` channels in Modes 0 & 1), replacing `rawSize <= 0.0` with `!(rawSize == rawSize)` so negative magnitudes are never culled, and keeping per-point curve unless `D10` changes it.
-  2. CPU `Float64` Relative-to-Center tile offsets uploaded as `f32` (`F-07`) + Mode 4 `cpy < screenHeight` guard.
-  3. Monotonic load-generation token in `DatasetSession` + single `PMTiles` instance per load.
-  4. Unload tiles before recycling buffers in `setRequestedColumns` (`F-09`), request only active columns lazily instead of pre-decoding all `<= 12` schema columns, cap `bufferPool.columns` tightly, and release CPU `tile.columns` `ArrayBuffer`s once uploaded to GPU slots.
-  5. Retry backoff + negative cache on failed tiles; complete `destroy()` / `ComputeRasterizer.dispose()` cleanup; clamp `zoomTUniform` to `[0, 1]`.
-  6. If `D9 = Option 1`, move 2s axis transitions into `ComputeRasterizer` and retire `Scatterplot` point meshes.
+- **Phase 5b (Discrete Fixes under Locked `D9` Compute-Only + `D10` Split-by-Mode, Each Individually Checked):**
+  1. Retire `Scatterplot` Three.js instanced point meshes & `WebGPUAdapter.ts` (`D9`), owning raw `GPUBuffer` slots directly (`TileGpuStore`) and moving 2-second axis transitions (`mix(prevPos, currPos, transitionT)`) into WGSL.
+  2. Pack `accumBuffer` into `2 × u32` (`8 B/px` = `117.9 MiB` at 5K, requesting adapter `maxStorageBufferBindingSize` on device init): race-free interval-gated `prevW = atomicAdd(&accumBuf[base2], w)` accumulation + Resolve-pass log-density tone mapping for **both** categorical and generic numeric Mode 1 (`D10`), `16-bit` channels with per-point ACES+sRGB for Gaia preset Modes 0 & 3 (`D10`), separated `valSum` and `wSum | lineHits` in Modes 2 & 4, and `!(rawSize == rawSize)` guard so negative magnitudes are never culled.
+  3. CPU `Float64` Relative-to-Center tile offsets uploaded as `f32` (`F-07`) + Mode 4 `cpy < screenHeight` guard.
+  4. Monotonic load-generation token in `DatasetSession` + single `PMTiles` instance per load + separate cold-boot vs. steady-state tile `SLO` tracking.
+  5. Unload tiles before recycling buffers in `setRequestedColumns` (`F-09`), request only active columns lazily instead of pre-decoding all `<= 12` schema columns, cap `bufferPool.columns` tightly, and release CPU `tile.columns` `ArrayBuffer`s once uploaded to GPU slots.
+  6. Retry backoff + negative cache on failed tiles; complete `destroy()` / `ComputeRasterizer.dispose()` cleanup; clamp `zoomTUniform` to `[0, 1]`.
 
 ---
 
@@ -192,7 +192,7 @@ flowchart TD
 
 - On click (`< 4 px` cursor movement), dispatch a $9 \times 9\text{ px}$ cursor-window compute pass writing to a **1 KB `slotBestHit: array<atomic<u32>, 256>`** buffer (1 word per slot, `0 B` per-frame overhead).
 - Each candidate packs **12-bit distance in sixteenths of a pixel + 20-bit row index** (`(dist16th_u12 << 20) | rawRowIdx_u20`, supporting up to `1,048,575` rows/tile; dynamically falling back if `--allow-oversize-leaves` exceeds $2^{20}$), un-scrambling the 2,048-row bijection and matching shader hash jitter, via a **single race-free `atomicMin`** per slot.
-- CPU reads back 1 KB, selects the best hit across active slots **breaking distance ties by coarser zoom level `z` first** (higher global priority) and `rawRowIdx` second, then fetches/decodes `row_id` + full row attributes from that single tile on demand (`0 MB` idle worker RAM)—verified against `arrowtiles.reader` by `row_id` on both samples.
+- CPU reads back 1 KB, selects the best hit across active slots **breaking distance ties by coarser zoom level `z` first** (higher global priority) and `rawRowIdx` second, then fetches/decodes `row_id` + all retained tile columns directly from that single `.arrowtiles` tile on demand (`0 MB` idle worker RAM, zero Parquet dependency in core library per `D8(2)`)—emitting `{ rowId, z, x, y, attributes }` with an optional `row_id`-sorted sidecar Parquet lookup hook for dropped cold columns and rendering hovered/selected highlights via a small plain-WebGPU overlay (`D9`), verified against `arrowtiles.reader` by `row_id` on both samples.
 
 ---
 

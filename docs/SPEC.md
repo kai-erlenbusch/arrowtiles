@@ -89,4 +89,7 @@ Metadata **MUST** record `"nominal_max_zoom"` (`u8`), `"tile_capacity"` (`u32`, 
 4. **Reserved Identifiers & Future Extensions:**
    - **Reserved Columns:** `row_id`, `x_u16`, `y_u16`, `z`, `final_tile_id`, and prefix `__at_*` (writers **MUST** reject colliding user columns unless `row_id` is passed via `--id-col`).
    - **Reserved Metadata Keys:** `format`, `version`, `arrow_schema`, `bounds`, `priority`, `sampling`, `grid_size`, `nominal_max_zoom`, `tile_capacity`, `max_tile_rows`, `total_rows`, `dropped_rows`, `dropped_columns`, `stats`, `tile_stats`, `view`, `layers`, `edges` (writers **MUST** error on unparseable custom metadata JSON or reserved-key collisions).
-   - **Reserved Future Concepts (Named Only):** `"layers"` (multi-archive auxiliary column layers), `"edges"` (graph links), and `v0.2` per-tile precomputed density / category-count summary grids under `"tile_stats"` (decoupling overview density & category shading from point-sampling mode).
+   - **Required `v0.2` Roadmap Extensions & Reserved Concepts:**
+     - **Required in `v0.2` — `"layers"` (Multi-Archive Column-Group Sidecars):** Partitioning wide (e.g. 30+-column) tables across a lean core geometry/visual `.arrowtiles` archive plus co-tiled auxiliary column-group `.arrowtiles` layer archives sharing identical `(z, x, y)` Hilbert tile assignments and row order (`D8`).
+     - **Planned in `v0.2` — `"tile_stats"` Summary Grids:** Per-tile precomputed density / category-count summary grids decoupling overview density & category shading from point-sampling mode (`D7`).
+     - **Reserved Concept (Named Only):** `"edges"` (graph links).

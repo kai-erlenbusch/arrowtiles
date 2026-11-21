@@ -493,7 +493,7 @@ class ArrowTilesBuilder:
                 continue
             qc = q(col)
             source_col_types_for_stats.append((col, schema_map[col]))
-            if col in cat_lookup_tables and self._base_duckdb_type(schema_map[col]) not in ("UTINYINT", "USMALLINT"):
+            if col in cat_lookup_tables:
                 tbl_name, code_sql_type = cat_lookup_tables[col]
                 alias = f"__at_cj_{join_idx}"
                 join_clauses.append(
