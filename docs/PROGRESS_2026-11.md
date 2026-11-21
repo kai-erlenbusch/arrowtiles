@@ -594,3 +594,66 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
 
 - **Questions for owner (Phase 7 Stop Gate before Phase 8):**
   1. **Phase 7 Review:** Ready to proceed to **Phase 8 (Vite ES-Module Library Build + `.d.ts` Declarations, Demo App Rebuilt Strictly on Public Entry Point with Zero Deep Imports, Single-HTML Embed Example, `LICENSE` Check, and Stop Gate `⛔ D12` for Package Name / Publishing)**?
+
+
+## 2026-11-21 — Pre-Phase-8 Hover Hardening & Phase 8 (finish — STOPPED AT `⛔ D12`): Compressed Pick LRU + 1-Tile Worker Cache + Instant GPU Hover Ring, Vite ES-Module Library Packaging (`98.5 kB` gzip), TypeScript 6.0 `.d.ts` Consumer Gate, Public-API Demo, `examples/embed.html`, and Read-Only License Audit
+
+- **Done:**
+  1. **Commit 1 (`ecda73d`) — Pre-Phase-8 Hover Network/CPU Hardening, Instant GPU Hover Ring, Spatial Slot Bounds Culling & Async Error Guards:**
+     - **Zero Redundant Hover Downloads & Re-Decodes (`src/lib/ViewerLayer.ts`, `src/PMTilesClient.ts`, `src/pmtiles.worker.ts`):**
+       - Same-winner `(tileKey, rawRowIdx)` short-circuit in `ViewerLayer.ts` (`0` network requests, `0` worker messages, `0` duplicate `'hover'` events when jittering over the same point).
+       - Single in-flight hover with `AbortController` + microtask-coalesced `inFlightPickTileFetches` in `PMTilesClient.ts` so intra-tile hover sweeps share a single `PMTiles.getZxy(z, x, y, signal)` download without abort-restarting it, while cross-tile moves and `pointerleave` abort stale downloads immediately.
+       - Byte-capped compressed tile LRU in `PMTilesClient.ts` (`<= 8` tiles / `<= 24 MiB`, opportunistically seeded in `loadTile`, accounted in `getCpuMemoryStats()`, and cleared on `setRequestedColumns` / `destroy()`) + 1-tile parsed Arrow `Table` cache in `pmtiles.worker.ts` (`decode_row`, cleared on `init_schema` / `clear_row_cache`) for `O(1)` (`0` Zstd decompressions, `0` `ArrayBuffer.slice` copies) consecutive intra-tile hovers.
+     - **Instant GPU Hover Ring, Spatial Slot Cursor-Window Culling & Opt-In Hover Sidecar (`src/core/TileGpuStore.ts`, `src/core/PickingLayer.ts`, `src/lib/types.ts`, `docs/API.md`):**
+       - Added `GPUBufferUsage.COPY_SRC` to tile column buffers and a `32 B` `winnerCoordBuffer` `MAP_READ` readback in `PickingLayer.ts` so `HighlightOverlay.hoverMarker` renders immediately at `60 FPS` from GPU winner coordinates before `decodeTileRow` finishes over slow networks.
+       - Added CPU screen-space tile-bounds culling in `PickingLayer.ts` (`!isTransitioning`), skipping non-overlapping spatial slots (`3 / 5` slots culled at `zoom = 2.0` in test).
+       - Made `resolveRowAttributes` run on `'click'` and `plot.pickAt(...)` only by default, adding `resolveRowAttributesOnHover?: boolean` (`default: false`) to `DeepgraphOptions`.
+     - **Async Error Guards & `pointerleave` Cleanup (`src/lib/ViewerLayer.ts`, `src/pmtiles.worker.ts`, `src/core/Renderer.ts`):**
+       - Wrapped `handleCanvasClick` and `pickAt` in `try/catch` (`0` `UnhandledPromiseRejection`s on mid-click `destroy()` / superseded `load()`, routing genuine `resolveRowAttributes` errors to `this.emit('error', ...)`).
+       - Included `action: data?.action, id: data?.id` on Zstd WASM init error `postMessage` in `pmtiles.worker.ts` and cleared `hoverMarker` + emitted `hover: null` on `<canvas>` `pointerleave`.
+  2. **Commit 2 — Phase 8: Vite ES-Module Library Packaging, TypeScript 6.0 `.d.ts` Gate, Pure Public-API Demo, `examples/embed.html` & Read-Only License Audit (`05_PLAN` §10):**
+     - **Vite ES-Module Library Build (`vite.lib.config.ts`, `package.json`, `docs/API.md`):**
+       - Configured `"exports"`, `"main"`, `"module"`, `"types"`, `"files": ["dist", "docs/API.md"]`, and `"sideEffects": false` in `package.json` while keeping `"private": true` and placeholder `"name"` until `⛔ D12`.
+       - Moved demo-only `"lil-gui"` to `"devDependencies"`, kept `"fflate"` in `"dependencies"` (used directly by `PMTilesClient.ts` for Gzip-compressed PMTiles v3 directories), preserved `copyPublicDir: false` in both `vite.lib.config.ts` (`npm run build` / `npm run build:lib` -> `dist/`) and `vite.config.ts` (`npm run build:demo` -> `dist-demo/`).
+       - `dist/index.js` (`429.84 kB` / **`98.47 kB` gzip**, `0 B` of `lil-gui` / `three` / `gpuStats`) spawns its worker relative to `import.meta.url` (`new URL("assets/pmtiles.worker-*.js", import.meta.url)`), and `dist/assets/pmtiles.worker-*.js` inlines `zstd.wasm` as `data:application/wasm;base64,...` so external consumers never hit `/assets/*.wasm` 404s.
+     - **TypeScript 6.0 `.d.ts` Packaging & External Consumer Verification (`tsconfig.build.json`, `scripts/emit_dts.mjs`, `scripts/verify_consumer_dts.mjs`, `src/index.ts`, `src/lib/types.ts`):**
+       - Made `src/lib/types.ts` 100% self-contained (`0` internal imports) and typed `export const Deepgraph: DeepgraphStatic` in `src/index.ts`, emitting sealed `dist/index.d.ts` (`780 B`) + `dist/lib/types.d.ts` (`11.48 kB`) with `rootDir: "./src"`, `stripInternal: true`, and `.ts -> .js` relative specifier rewriting (`0` `INTERNAL_DIAGNOSTICS`, `ViewerLayer`, `three`, `lil-gui`, or `@webgpu/types` leakage).
+       - Verified via `npm run verify:types` (`tsc --noEmit` in an external consumer directory under both `bundler` and `nodenext` with `allowImportingTsExtensions` disabled, `skipLibCheck: false`, and `types: []`).
+     - **Pure Public-API Demo & Standalone Single-HTML Embed (`src/main.ts`, `src/demo/ControlsPanel.ts`, `examples/embed.html`, `tests/library-embed.spec.ts`):**
+       - Removed `INTERNAL_DIAGNOSTICS` from `src/main.ts` (`0` deep internal imports across `src/main.ts` and `src/demo/*`; `INTERNAL_DIAGNOSTICS` used strictly in `tests/*.spec.ts` and `scripts/verify_phase5b.mjs`) and wired live `'hover'` + pinned `'click'` readout into `ControlsPanel.ts`.
+       - Added standalone `examples/embed.html` (`44` lines) importing `../dist/index.js` directly in `<script type="module">` and verified both `examples/embed.html` and the pure-public-API demo end-to-end on Intel `xe-lpg` iGPU in `tests/library-embed.spec.ts`.
+
+- **Evidence:**
+  - **Writer Test Suite (CPU-only):** `.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider` -> **`51 passed, 1 skipped`**.
+  - **Viewer Typecheck, Library Build, Demo Build & External Consumer `.d.ts` Gate (CPU-only):**
+    - `npm run typecheck` (`tsc --noEmit`): **`exit code 0`**.
+    - `npm run build:lib`: **`exit code 0` in `224 ms`** (`dist/index.js` = **`429.84 kB` / `98.47 kB` gzip**; `dist/index.d.ts` + `dist/lib/types.d.ts`).
+    - `npm run verify:types`: **`PASS`** under both `"moduleResolution": "bundler"` and `"moduleResolution": "nodenext"` (`allowImportingTsExtensions=false`, `skipLibCheck=false`, `types=[]`).
+    - `npm run build:demo`: **`exit code 0` in `260 ms`**.
+    - Deep-import grep across `src/main.ts` and `src/demo/*.ts`: **`0` imports from `./lib/*` or `./core/*`**.
+  - **Intel-iGPU Sample-Only Playwright Verification (`0 B` on RTX 5090):**
+    - `npx playwright test tests/picking-layer.spec.ts`: **`1 passed`** (`reqsDuringLoadedSweep = 0` across 20 hovers; `coldTileRangeReqs = 1` across 20 cold-cache hovers under `50 ms` RTT / `50 Mbps`; instant GPU hover ring `markerPresentImmediately = true` before network resolve; `3 / 5` spatial slots culled; `pointerleave` clear; `0` `UnhandledPromiseRejection`s; `37,917,484 / 37,917,484 B` & `6 / 6` devices freed).
+    - `npx playwright test tests/library-embed.spec.ts`: **`1 passed in 9.4s`** (`/examples/embed.html?power=low` loaded `/dist/index.js` + `/dist/assets/pmtiles.worker-*.js` with `failedUrls = []`, `0` `.lil-gui` nodes, `winGpuStatsDefined = false`, clicked `row_id = 40064` `"mixtral"`, and tore down `9,499,388 / 9,499,388 B` & `1 / 1` device cleanly in the public-API demo).
+
+- **Read-Only `LICENSE` & Third-Party Dependency License Audit (Zero Files Created/Modified):**
+  - **Repository License Status (Requires Owner Decision at `⛔ D12`):**
+    - `duckdb-arrowtiles`: **No `LICENSE` file present on disk**; `pyproject.toml` and `arrowtiles-engine/Cargo.toml` omit `license`; `README.md` §Licensing currently states **CC BY-NC 4.0**.
+    - `deepgraph-arrowtiles-sandbox`: **No `LICENSE` file present on disk**; `package.json` omits `license` (`"private": true`); `README.md` §Licensing currently states **CC BY-NC 4.0**.
+  - **Viewer (`deepgraph-arrowtiles-sandbox`) Direct Runtime Dependencies (Bundled into `dist/`):**
+    - `@bokuweb/zstd-wasm` `0.0.27` — **MIT**
+    - `apache-arrow` `21.1.0` — **Apache-2.0**
+    - `fflate` `0.8.3` — **MIT**
+    - `p-queue` `9.3.1` — **MIT**
+    - `pmtiles` `4.4.1` — **BSD-3-Clause**
+    - *(Demo-only `devDependency`: `lil-gui` `0.21.0` — **MIT**, excluded from `dist/`)*
+  - **Writer (`duckdb-arrowtiles`) Direct Python & Rust Dependencies:**
+    - Python (`pyproject.toml`): `duckdb` `1.5.3` (**MIT**), `pmtiles` `3.7.0` (**BSD-3-Clause**), `pyarrow` `24.0.0` (**Apache-2.0**), `tqdm` `4.67.3` (**MPL-2.0 AND MIT**), `maturin` `1.14.1` (**MIT OR Apache-2.0**).
+    - Rust (`arrowtiles-engine/Cargo.toml`): `arrow` `58.3.0` (**Apache-2.0**), `parquet` `58.3.0` (**Apache-2.0**), `pyo3` `0.23.5` (**MIT OR Apache-2.0**), `pyo3-log` `0.12.4` (**Apache-2.0 OR MIT**), `pmtiles` `0.23.0` (**MIT OR Apache-2.0**), `rayon` `1.12.0` (**MIT OR Apache-2.0**), `serde_json` `1.0.150` (**MIT OR Apache-2.0**), `base64` `0.22.1` (**MIT OR Apache-2.0**), `anyhow` `1.0.103` (**MIT OR Apache-2.0**), `log` `0.4.32` (**MIT OR Apache-2.0**), `fast_hilbert` `2.1.0` (**MIT**), `zstd` `0.13.3` (**MIT**). Across all `426` transitive crates in `Cargo.lock`, `424` are standard permissive (`MIT`/`Apache-2.0`/`BSD`/`ISC`/`Zlib`/`Unicode-3.0`) plus `attohttpc` `0.30.1` (**MPL-2.0**, unused optional HTTP transitive via `pmtiles`) and `webpki-roots` `1.0.7` (**CDLA-Permissive-2.0**); **zero GPL / AGPL / SSPL / CC BY-NC** third-party dependencies exist in either repo.
+
+- **Not done / failed:**
+  - **`LICENSE` creation/edits, `npm publish`, `maturin publish`, and `git push`:** Intentionally NOT performed — stopped cleanly at **`⛔ D12`**.
+
+- **Questions for owner (`⛔ D12` Final Release & Publishing Stop Gate):**
+  1. **Package Names (`⛔ D12a`):** Confirm final npm package name for `deepgraph-arrowtiles-sandbox` (e.g. `deepgraph` / `@deepgraph/plot`) and PyPI package name for `duckdb-arrowtiles` (currently `arrowtiles` in `pyproject.toml`).
+  2. **Repository `LICENSE` Choice (`⛔ D12b`):** Both repos currently have no `LICENSE` file and carry `CC BY-NC 4.0` text in `README.md`, while all runtime dependencies across JS, Python, and Rust are OSI-compatible (`MIT` / `Apache-2.0` / `BSD-3-Clause` / file-level `MPL-2.0`). Which `LICENSE` should be added to each repo (and `SPEC.md`), and should `README.md` §Licensing be updated to match?
+  3. **Remote Push & Registry Publish (`⛔ D12c`):** Ready to push `revival/2026-11-wip` to GitHub / open PRs, and when would you like to flip `"private": false` for `npm publish` / `maturin publish`?
