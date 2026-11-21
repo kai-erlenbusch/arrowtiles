@@ -21,6 +21,14 @@ from arrowtiles.reader import ArrowTilesReader
 from arrowtiles.validator import validate_file
 
 
+def _flatten_column_args(raw: str | Sequence[str] | None) -> list[str] | None:
+    if not raw:
+        return None
+    tokens = [raw] if isinstance(raw, str) else list(raw)
+    out = [c.strip() for tok in tokens for c in tok.split(",") if c.strip()]
+    return out or None
+
+
 def _cmd_build(args: argparse.Namespace) -> int:
     preset = args.preset or args.dataset
     if preset == "gaia":
@@ -44,12 +52,8 @@ def _cmd_build(args: argparse.Namespace) -> int:
         if not args.x_col or not args.y_col:
             print("Error: --x-col and --y-col are required for generic builds.", file=sys.stderr)
             return 2
-        cols = [c.strip() for c in args.columns.split(",") if c.strip()] if args.columns else None
-        cat_cols = (
-            [c.strip() for c in args.categorical_cols.split(",") if c.strip()]
-            if args.categorical_cols
-            else None
-        )
+        cols = _flatten_column_args(args.columns)
+        cat_cols = _flatten_column_args(args.categorical_cols)
         summary = build_generic(
             input_parquet=args.input,
             output_path=args.output,
@@ -145,11 +149,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_build.add_argument("--sort-col", default=None, help="Optional priority sort column (default: seeded random)")
     p_build.add_argument("--sort-dir", choices=["ASC", "DESC", "asc", "desc"], default="ASC")
     p_build.add_argument("--id-col", default=None, help="Optional unique integer row ID column")
-    p_build.add_argument("--columns", default=None, help="Comma-separated subset of payload columns to retain")
+    p_build.add_argument(
+        "--columns",
+        nargs="+",
+        default=None,
+        help="Space- or comma-separated subset of payload columns to retain",
+    )
     p_build.add_argument(
         "--categorical-cols",
+        nargs="+",
         default=None,
-        help="Comma-separated columns (including integer cluster IDs) to encode as v0.1 categoricals",
+        help="Space- or comma-separated columns (including integer cluster IDs) to encode as v0.1 categoricals",
     )
     p_build.add_argument("--keep-source-xy", action="store_true", help="Retain raw source X/Y columns in tiles")
     p_build.add_argument(

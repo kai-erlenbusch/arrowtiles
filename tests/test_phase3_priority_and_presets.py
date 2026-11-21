@@ -507,3 +507,104 @@ def test_overview_bytes_warning_and_uint64_large_id_col(
         assert root is not None
         ids = root["row_id"].to_pylist()
         assert all(base_id <= v < base_id + 200 for v in ids)
+
+
+def test_cli_columns_and_categorical_cols_space_and_comma_syntax(tmp_path: Path) -> None:
+    """Verify --columns and --categorical-cols accept space-separated, comma-separated, and mixed tokens."""
+    from arrowtiles.__main__ import _flatten_column_args, build_parser, main as cli_main
+
+    parser = build_parser()
+    parsed_space = parser.parse_args(
+        [
+            "build",
+            "--input",
+            "in.parquet",
+            "--output",
+            "out.arrowtiles",
+            "--x-col",
+            "x",
+            "--y-col",
+            "y",
+            "--columns",
+            "model",
+            "clusters_14",
+            "num_of_tokens",
+            "--categorical-cols",
+            "clusters_14",
+            "model",
+        ]
+    )
+    assert _flatten_column_args(parsed_space.columns) == ["model", "clusters_14", "num_of_tokens"]
+    assert _flatten_column_args(parsed_space.categorical_cols) == ["clusters_14", "model"]
+
+    parsed_mixed = parser.parse_args(
+        [
+            "build",
+            "--input",
+            "in.parquet",
+            "--output",
+            "out.arrowtiles",
+            "--x-col",
+            "x",
+            "--y-col",
+            "y",
+            "--columns",
+            "model,clusters_14",
+            "num_of_tokens",
+            "--categorical-cols",
+            "clusters_14,model",
+        ]
+    )
+    assert _flatten_column_args(parsed_mixed.columns) == ["model", "clusters_14", "num_of_tokens"]
+    assert _flatten_column_args(parsed_mixed.categorical_cols) == ["clusters_14", "model"]
+
+    # End-to-end CLI build with space-separated --columns and --categorical-cols (matching README.md)
+    src_pq = tmp_path / "cli_cols.parquet"
+    con = duckdb.connect()
+    con.execute(
+        f"""
+        COPY (
+            SELECT
+                CAST(i % 20 AS DOUBLE) * 0.05 AS x,
+                CAST(i // 20 AS DOUBLE) * 0.1 AS y,
+                CASE WHEN i % 2 = 0 THEN 'gpt-4' ELSE 'claude-3' END AS model,
+                CAST(i % 5 AS INTEGER) AS clusters_14,
+                CAST(i * 3 + 1 AS INTEGER) AS num_of_tokens,
+                CAST(i AS DOUBLE) AS unused_col
+            FROM range(120) AS t(i)
+        ) TO '{src_pq.as_posix()}' (FORMAT PARQUET)
+        """
+    )
+    con.close()
+
+    out_at = tmp_path / "cli_cols.arrowtiles"
+    rc = cli_main(
+        [
+            "build",
+            "--input",
+            str(src_pq),
+            "--output",
+            str(out_at),
+            "--x-col",
+            "x",
+            "--y-col",
+            "y",
+            "--columns",
+            "model",
+            "clusters_14",
+            "num_of_tokens",
+            "--categorical-cols",
+            "clusters_14",
+            "--temp-dir",
+            str(tmp_path / "tmp_cli_cols"),
+        ]
+    )
+    assert rc == 0
+    val = validate_file(out_at, expected_input_rows=120)
+    assert val.ok, val.errors
+
+    with ArrowTilesReader(out_at) as reader:
+        names = set(reader.schema().names)
+        assert {"model", "clusters_14", "num_of_tokens"}.issubset(names)
+        assert "unused_col" not in names
+        assert reader.metadata()["stats"]["clusters_14"]["type"] == "categorical"

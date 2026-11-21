@@ -507,3 +507,44 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
 
 - **Questions for owner (Phase 5b Stop Gate before Phase 6):**
   1. **Phase 5b Code & Visual Review:** Ready to proceed to **Phase 6 (Real Headed-Browser WebGPU VRAM & CPU Retention Lifecycle Gate — `window.__gpuStats` + `20×` `Deepgraph.create()`/`plot.destroy()` leak test + negative control)**?
+
+
+## 2026-11-21 — Phase 6 (finish, paused for review before Phase 7): Complete Three.js Removal (`D9`), `64`-Level Numeric Log-Density Precision, Superseded `load()` `AbortError`, CLI `nargs="+"`, and Real-GPU `__gpuStats` Lifecycle Gate (`3 passed`)
+
+- **Done:**
+  1. **Finished `D9` — Removed `three` & `@types/three` Completely from the Library (`package.json`, `vite.config.ts`, `tsconfig.json`, `src/core/Renderer.ts`, `src/core/ComputeRasterizer.ts`, `src/lib/RenderLoop.ts`, `src/lib/ViewerLayer.ts`):**
+     - Replaced `THREE.WebGPURenderer`, `OrthographicCamera`, and `OrbitControls` with ~310 lines of zero-dependency native WebGPU in `src/core/Renderer.ts`: directly owns `<canvas>` (`touch-action: none`), `navigator.gpu.requestAdapter()` / `adapter.requestDevice({ requiredLimits })`, `GPUCanvasContext` (`configure` / `unconfigure`), pure `Float64` `Camera2D` + pointer-capture drag pan (`pointerdown`/`move`/`up`/`cancel`/`lostpointercapture`) + wheel zoom-to-cursor, and native `requestAnimationFrame`.
+     - Eliminated `100%` of `renderer.backend.device` private coupling; `ViewerLayer.destroy()` / `Renderer.dispose()` now synchronously unconfigures the swapchain context and calls `device.destroy()`.
+     - Added explicit `DeepgraphStatic` interface annotation on `export const Deepgraph: DeepgraphStatic` (`tsc --noEmit --declaration` exits `0` with zero private class traversal), declared `@webgpu/types` in `devDependencies`, and set `build.copyPublicDir = false` in `vite.config.ts` so `vite build` never copies multi-GB `public/*.arrowtiles` into `dist/`.
+     - Production JS bundle dropped by **64.4%**: `1,024.89 kB` (`274.74 kB` gzip) -> **`364.78 kB` (`94.09 kB` gzip)**, building in **`258 ms`**.
+  2. **Phase 5b Review Polish & Reproducibility Fixes:**
+     - **Superseded `load()` (`AbortError`):** `ViewerLayer.load()` now rejects superseded in-flight loads (`gen !== this.loadGeneration && !this.destroyed`) with `new DOMException('Dataset load superseded', 'AbortError')` instead of resolving with stale/other metadata; `src/main.ts` ignores `AbortError` cleanly on rapid UI switches.
+     - **Committed `scripts/verify_phase5b.mjs`:** Saved the standalone 8-check Phase 5b WebGPU verification harness under `deepgraph-arrowtiles-sandbox/scripts/verify_phase5b.mjs` (updated with superseded `load()` `AbortError` and post-`destroy()` `__gpuStats` checks).
+     - **Mode 1 `64`-Level (`6-bit`) Numeric Color Precision & `docs/API.md`:** Kept `64` weight units × `15` (`960 < 1,024`) for categorical Mode 1 (`isCat = true`) and switched numeric Mode 1 (`isCat = false`) to `16` weight units × `63` (`16 * 63 = 1,008 < 1,024` — `64` levels/channel = `4×` smoother numeric gradient resolution at `0` extra memory and `0` carry); updated `docs/API.md` to document `"mean of the first 64 (categorical, 4-bit) / 16 (numeric, 6-bit / 64-level) weighted hits per pixel"`, `AbortError`, and `device.destroy()`.
+     - **Writer CLI `--columns` & `--categorical-cols` (`nargs="+"`):** Updated `arrowtiles/__main__.py` (`_flatten_column_args` + `nargs="+"`) so space-separated (`--columns model clusters_14 num_of_tokens`, matching `README.md:89`), comma-separated, and mixed invocations all work; added `test_cli_columns_and_categorical_cols_space_and_comma_syntax` in `tests/test_phase3_priority_and_presets.py`.
+  3. **Phase 6 Real-GPU `__gpuStats` & CPU-Buffer Lifecycle Suite (`src/core/gpuStats.ts`, `src/PMTilesClient.ts`, `playwright.config.ts`, `tests/gpu-vram-lifecycle.spec.ts`):**
+     - Instrumented `GPUAdapter.prototype.requestDevice`, `GPUDevice.prototype.destroy`, `GPUDevice.prototype.createBuffer`, and `GPUBuffer.prototype.destroy` in `src/core/gpuStats.ts` -> `window.__gpuStats` (`liveDevices`, `totalDevicesCreated`, `totalDevicesDestroyed`, `liveBuffers`, `liveBytes`, `tileLiveBuffers`, `tileLiveBytes`, `totalCreatedBuffers`, `totalDestroyedBuffers`, `totalCreatedBytes`, `totalDestroyedBytes`), plus `PMTilesClient.getCpuMemoryStats()` and live HUD `totalGpuMB`.
+     - Configured `playwright.config.ts` (`chrome-webgpu`, `channel: 'chrome'`, `headless: false`, real hardware GPU — removed legacy `--use-angle=swiftshader`, isolated on `127.0.0.1:5179`) and implemented all 5 lifecycle gates in `tests/gpu-vram-lifecycle.spec.ts`.
+
+- **Evidence:**
+  - **Writer `pytest` Suite (`51 passed, 1 skipped`):**
+    - Command: `.venv\Scripts\python.exe -m pytest -v -rs -p no:cacheprovider`
+    - Output: **`51 passed, 1 skipped in 12.43s`**.
+  - **Viewer Typecheck, Declaration Check, Bundle Build & `verify_phase5b.mjs`:**
+    - `npm run typecheck` (`tsc --noEmit`) & `npx tsc --noEmit --declaration`: **`exit code 0`**.
+    - `Select-String -Path 'src\**\*.ts' -Pattern '\bthree\b|\bTHREE\b|\.backend\b'`: **`0` code matches**.
+    - `npm run build`: **`exit code 0` in `258 ms`** (`dist/assets/index-*.js` = **`364.78 kB` / `94.09 kB` gzip**).
+    - `node scripts/verify_phase5b.mjs`: **`exit code 0`** (`ALL PHASE 5B LIVE WEBGPU CHECKS PASSED`).
+  - **Real-GPU Playwright Lifecycle Suite (`npm run test:e2e` — `3 passed in 1.2m` on Intel `xe-lpg` Hardware GPU, `isFallbackAdapter: false`):**
+    - **Gate 1 (Render, Controls & Frame-to-Frame Stability):** `69` visible tiles, `15,604,497` active Gaia stars rendered, bit-exact `Float64` wheel zoom-to-cursor (`|Δwx| = 0.0`, `|Δwy| = 0.0`); stationary 2-frame pixel delta: **`0.0040%`** on `gaia_full` Mode 0 (`39 / 978,316` lit px), **`0.0704%`** on `lmsys` Categorical Mode 1 (`meanDelta = 1.71 / 255`), and **`1.1475%`** on `lmsys` `64`-level Numeric Mode 1 (`meanDelta = 6.66 / 255`); `0` WebGPU/console/page errors.
+    - **Gate 2 (Deep-Zoom LRU Eviction Plateau, `maxTileCache = 40`):** Visited **`289` unique `Z >= 3` tiles** (`7.2×` cache cap); `activeCacheSize` plateaued at `40` (`tileLiveBuffers = 160` at step 8 & step 17; `tileLiveMB = 144.88 MB -> 104.73 MB`; `1,084` buffers destroyed mid-sweep; `retainedTileCpuBytes = 0` at every stop); post-`destroy()`: `1,248 / 1,248` buffers & `1,094,363,344 / 1,094,363,344 B` destroyed (`liveDevices = 0, liveBytes = 0`).
+    - **Gate 3 (Superseded `load()` `AbortError` + `5×` Dataset Swaps):** `load(A); load(B)` rejected `A` with `AbortError` while `B` (`149,942` rows) won; across 5 full `lmsys_sample` <-> `gaia_sample` round-trips, `gaiaTileLiveBytes` returned to **`1,334,628 B` (`67` buffers) on every single round (`0`-byte drift)**.
+    - **Gate 4 (`20×` `Deepgraph.create()` + `plot.destroy()` Loop):** `20` `GPUDevice`s created === `20` destroyed (`22 / 22` cumulative), `2,967 / 2,967` buffers (`1,224,723,524 / 1,224,723,524 B`) destroyed, **`liveDevices = 0, liveBuffers = 0, liveBytes = 0, remainingCanvases = 0`**.
+    - **Gate 5 (Mandatory Negative Control):** Enabling `debugSkipBufferDestroy = true` on `maxTileCache = 20` produced a **`116,853,136 B` (`111.44 MiB`, `112` buffers) discrepancy** deterministically caught by the `gs.tileLiveBytes === tileStore.getLiveTileGpuBytes()` check (`invariantFailedAsExpected: true`), then flushed cleanly back to `0` live bytes/devices.
+    - **Rapid-Pan JS Heap Check (`tests/memory-leak.spec.ts`):** `Initial Heap: 8.12 MB -> Final Heap: 7.54 MB (Delta: -0.58 MB)`.
+
+- **Not done / failed:**
+  - **`git push` / `npm publish`:** Not run (holding local commits on `revival/2026-11-wip` per `⛔` guardrails).
+
+- **Questions for owner (Phase 6 Stop Gate before Phase 7):**
+  1. **Phase 6 Review:** Ready to proceed to **Phase 7 (Race-Free Per-Slot `1 KB` GPU `PickingLayer` in a dedicated `@compute` pipeline + on-demand `.arrowtiles` `row_id`/attribute decode + plain-WebGPU hover/selection highlight overlay)**?
