@@ -548,3 +548,49 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
 
 - **Questions for owner (Phase 6 Stop Gate before Phase 7):**
   1. **Phase 6 Review:** Ready to proceed to **Phase 7 (Race-Free Per-Slot `1 KB` GPU `PickingLayer` in a dedicated `@compute` pipeline + on-demand `.arrowtiles` `row_id`/attribute decode + plain-WebGPU hover/selection highlight overlay)**?
+
+
+## 2026-11-21 — Pre-Phase-7 Hygiene Fix & Phase 7 (finish, paused for review before Phase 8): Library-Clean `gpuStats` Isolation, `0.0000%`-Shimmer `1,024`-Level Numeric Mode 1, `powerPreference` Intel-iGPU Guard, Race-Free `1 KB` GPU `PickingLayer`, Standalone `.arrowtiles` `row_id` Decode, and Plain-WebGPU `HighlightOverlay`
+
+- **Done:**
+  1. **Pre-Phase-7 Fix — Removed Global WebGPU Prototype Patching from Library Code (`src/demo/gpuStats.ts`, `src/core/Renderer.ts`, `src/lib/RenderLoop.ts`, `src/lib/diagnostics.ts`):**
+     - Moved `gpuStats.ts` out of `src/core/` into `src/demo/gpuStats.ts` (`0` global prototype patches and `0` `globalThis.__gpuStats` touches in `src/lib/`, `src/core/`, or `src/index.ts`; verified live in Chrome before harness installation: `winGpuStatsDefined === false`, `createBufferUnpatched === true`).
+     - Added `ComputeRasterizer.getLiveGpuBytes()`, `PickingLayer.getLiveGpuBytes()`, and `HighlightOverlay.getLiveGpuBytes()`, computing `TelemetrySnapshot.totalGpuMB` strictly from library-owned `GPUBuffer` byte accounting.
+     - Installed `installGpuStatsInstrumentation()` strictly in demo/test harnesses (`src/main.ts`, `scripts/verify_phase5b.mjs`, `tests/gpu-vram-lifecycle.spec.ts`, and `tests/picking-layer.spec.ts`).
+  2. **Option B GPU Coexistence (`DeepgraphOptions.powerPreference` + Intel iGPU Pre-Check):**
+     - Added `powerPreference?: 'high-performance' | 'low-power'` to `DeepgraphOptions` (`src/lib/types.ts`, `docs/API.md`), forwarded through `ViewerLayer.create()` -> `Renderer.init()` (`navigator.gpu.requestAdapter({ powerPreference })`), plus `?power=low` support in `src/main.ts` and `--force_low_power_gpu` in `playwright.config.ts`.
+     - Verified `adapter.info.vendor === 'intel'` (`architecture: 'xe-lpg'`) **before** calling `requestDevice()` in `tests/picking-layer.spec.ts`, testing strictly on `< 5 MiB` `lmsys_sample` and `gaia_sample` (`17.02 MB` total cumulative iGPU allocations freed `100%` to `0`, `0 B` on the RTX 5090).
+  3. **Zero-Shimmer `1,024`-Level Scalar Value-Sum for Numeric Mode 1 (`src/core/ComputeRasterizer.ts`, `docs/API.md`):**
+     - Kept `64 × 15 = 960 < 1,024` interval-gated RGB accumulation for categorical Mode 1 (`isCat = true`).
+     - Upgraded numeric Mode 1 (`isCat = false`) to an order-independent normalized scalar value sum in `word1`: `tU = min(u32(clamp(tNorm, 0.0, 1.0) * 1023.0 + 0.5), 1023u)` gated at `prevW < 1048576u` (`1,048,576 × 1,023 = 1.07B < 2^32`, zero overflow), resolving `eval_ramp(meanT, scaleId)` × `log2(1 + count)` brightness in `fs_main`.
+     - Measured stationary 2-frame shimmer on `lmsys_sample` (`num_of_tokens` `viridis`): **`0 / 131,028` lit pixels changed (`0.0000%` shimmer, `maxDelta = 0`)**.
+  4. **Phase 7 — Race-Free Per-Slot `1 KB` GPU `PickingLayer`, Standalone `.arrowtiles` `row_id` Decode & Plain-WebGPU `HighlightOverlay` (`05_PLAN` §9):**
+     - **Drag vs. Click Gate (`src/core/Renderer.ts`):** Tracks pointer travel from `pointerdown` to `pointerup`, triggering `onCanvasClick` only when left-button pointer travel is `< 4.0 CSS px` (plus `onCanvasHover` and `onCanvasPointerLeave`).
+     - **Dedicated `@compute` `PickingLayer` (`src/core/PickingLayer.ts`):** Separate `@compute` pipeline (`1` dynamic uniform + `8` storage buffers `<=` universal WebGPU baseline; `0 B` per-frame pan/zoom overhead) dispatching over a `9 × 9 CSS px` (`dpr`-scaled) cursor window and writing `(dist16th_u12 << 20u) | localRowIdx_u20` via `atomicMin` into a `1,056 B` (`~1 KB`) `slotBestHit` buffer, with automatic multi-chunk passes if an `--allow-oversize-leaves` tile ever exceeds `2^20 - 1` (`1,048,575`) rows. Matches `ComputeRasterizer`'s exact `Float64` `RTC` projection, `pcg_hash` jitter, `maxMag`/`NaN` visibility cutoffs, custom chart axes, and 2-second WGSL axis transitions.
+     - **Priority-Aware Tie-Breaking & On-Demand `.arrowtiles` Row Decode (`src/PMTilesClient.ts`, `src/pmtiles.worker.ts`, `src/lib/ViewerLayer.ts`):** Breaks `dist16th` ties across slots by **coarser zoom `z` first** and `rawRowIdx` second, decodes `row_id` (`rowId: number` + lossless `rowIdBigInt?: bigint` when `> 2^53 - 1`), `x_u16`/`y_u16`, and all retained columns (including categorical string labels and `NULL -> null`) directly from `.arrowtiles` on demand (`0 MB` persistent worker RAM), invokes optional `resolveRowAttributes`, exposes `plot.pickAt(cssX, cssY)`, and emits `'click'`, `'select'`, and `45 ms`-throttled `'hover'`.
+     - **Plain-WebGPU `HighlightOverlay` (`src/core/HighlightOverlay.ts`, `src/demo/ControlsPanel.ts`):** Renders anti-aliased dual-contrast SDF hover (cyan) and selected (gold) rings via `loadOp: 'load'` in the same `GPUCommandEncoder` as `ComputeRasterizer`, tracking pan, zoom, and 2s axis transitions (`0` draw calls when idle), plus an inspect readout card in `ControlsPanel.ts` and deterministic `GPUBuffer.destroy()` teardown in `plot.destroy()`.
+
+- **Evidence:**
+  - **Viewer Typecheck, `.d.ts` Check, Production Build & Library Hygiene Grep (CPU-only):**
+    - `npm run typecheck` (`tsc --noEmit`) & `npx tsc --noEmit --declaration`: **`exit code 0`**.
+    - `npm run build`: **`exit code 0` in `262 ms`** (`dist/assets/index-*.js` = **`399.12 kB` / `102.46 kB` gzip**).
+    - Grep across `src/lib/*.ts`, `src/core/*.ts`, `src/index.ts` for `__gpuStats`, `installGpuStatsInstrumentation`, `prototype.requestDevice`, `prototype.createBuffer`: **`0` matches**.
+  - **Intel-iGPU Sample-Only Playwright Verification (`npx playwright test tests/picking-layer.spec.ts` — `1 passed in 13.7s`):**
+    - **Intel iGPU Pre-Check:** `vendor === 'intel'` (`xe-lpg`, `isFallbackAdapter: false`) verified before `requestDevice()`.
+    - **Library Hygiene Proof:** `winGpuStatsDefined === false`, `createBufferUnpatched === true`.
+    - **Numeric Mode 1 Stationary Shimmer:** **`0 / 131,028` lit pixels changed (`0.0000%`, `maxDelta = 0`)**.
+    - **Drag vs. Click Gate:** `40 × 25 px` drag emitted **`0` `'click'` events**; stationary click (`0 px` travel) emitted `'click'` + `'select'`.
+    - **`ArrowTilesReader` Ground-Truth Parity (`lmsys_sample` & `gaia_sample`):**
+      - `lmsys_sample`: `rowId = 40064` (`model: "mixtral"`, `num_of_tokens: 308`, `|ΔdataX| < 1e-12`, `|ΔdataY| < 1e-12`), `rowId = 38479` (`model: "llama-3"`, `num_of_tokens: 95`), `rowId = 45449` (`model: "gpt-4"`, `num_of_tokens: 2`).
+      - `gaia_sample` Spatial Sky: `rowId = 0` (`phot_g_mean_mag = 1.9425`, `bp_rp = 1.1435`, `radial_velocity = null`, `teff_gspphot = null`, `|ΔdataX| < 1e-12`, `|ΔdataY| < 1e-12`) + `'hover'` event verified.
+      - `gaia_sample` HR Diagram (`x: 'bp_rp'`, `y: 'phot_g_mean_mag'`, `flipY: true`): `rowId = 14301` (`dataX = -0.500831`, `dataY = 6.667600`).
+    - **Highlight Overlay, Priority Tie-Break, Oversize Leaf Chunking, `BigInt` `row_id` & Zero-Leak Teardown:**
+      - `HighlightOverlay` rendered `140` gold ring pixels around `(480, 300)` and cleared cleanly (`click: null`, `select: { points: [] }`) on empty background click.
+      - Coarser `0/0/0` (`z = 0`) beat `1/1/1` (`z = 1`) on exact pixel-center tie; `1,060,000`-row oversize leaf picked `rawRowIdx = 1,055,000` in chunk `#1`; `resolveRowAttributes` enriched `sidecarPrompt: "prompt_for_40064"`; `UInt64` `5900000000000000123n` (`> 2^53 - 1`) round-tripped losslessly via `rowIdBigInt`.
+      - Post-`destroy()`: `2 / 2` `GPUDevice`s destroyed, `212 / 212` `GPUBuffer`s destroyed, **`17,021,320 / 17,021,320 B` destroyed (`liveDevices = 0, liveBuffers = 0, liveBytes = 0`)**, `0` WebGPU/console/page errors.
+
+- **Not done / failed:**
+  - **`git push` / `npm publish`:** Not run (holding local commits on `revival/2026-11-wip` per `⛔` guardrails).
+
+- **Questions for owner (Phase 7 Stop Gate before Phase 8):**
+  1. **Phase 7 Review:** Ready to proceed to **Phase 8 (Vite ES-Module Library Build + `.d.ts` Declarations, Demo App Rebuilt Strictly on Public Entry Point with Zero Deep Imports, Single-HTML Embed Example, `LICENSE` Check, and Stop Gate `⛔ D12` for Package Name / Publishing)**?
