@@ -20,7 +20,8 @@ from tqdm import tqdm
 
 SPEC_FORMAT = "arrowtiles"
 SPEC_VERSION = "0.1"
-DEFAULT_TILE_CAPACITY = 100_000
+DEFAULT_TILE_CAPACITY = 25_000
+DEFAULT_GAIA_TILE_CAPACITY = 100_000
 DEFAULT_MAX_TILE_ROWS = 262_144
 DEFAULT_NOMINAL_MAX_ZOOM = 14
 DEFAULT_RANDOM_SEED = 42
@@ -328,7 +329,7 @@ class ArrowTilesBuilder:
         max_capacity: int = DEFAULT_TILE_CAPACITY,
         max_zoom: int = DEFAULT_NOMINAL_MAX_ZOOM,
         max_tile_rows: int | None = None,
-        sampling: str = "even_coverage",
+        sampling: str = "proportional",
         grid_size: int | None = None,
         seed: int = DEFAULT_RANDOM_SEED,
         id_col: str | None = None,
@@ -492,7 +493,7 @@ class ArrowTilesBuilder:
                 continue
             qc = q(col)
             source_col_types_for_stats.append((col, schema_map[col]))
-            if col in cat_lookup_tables and self._base_duckdb_type(schema_map[col]) not in DUCKDB_INTEGER_TYPES:
+            if col in cat_lookup_tables and self._base_duckdb_type(schema_map[col]) not in ("UTINYINT", "USMALLINT"):
                 tbl_name, code_sql_type = cat_lookup_tables[col]
                 alias = f"__at_cj_{join_idx}"
                 join_clauses.append(
@@ -851,11 +852,12 @@ def build_generic(
     sort_dir: str = "ASC",
     id_col: str | None = None,
     columns: list[str] | None = None,
+    categorical_cols: list[str] | None = None,
     keep_source_xy: bool = False,
     max_capacity: int = DEFAULT_TILE_CAPACITY,
     max_zoom: int = DEFAULT_NOMINAL_MAX_ZOOM,
     max_tile_rows: int | None = None,
-    sampling: str = "even_coverage",
+    sampling: str = "proportional",
     grid_size: int | None = None,
     seed: int = DEFAULT_RANDOM_SEED,
     max_categories: int = DEFAULT_AUTO_MAX_CATEGORIES,
@@ -893,6 +895,7 @@ def build_generic(
             "y_col": y_col,
             "keep_source_xy": bool(keep_source_xy),
             "max_categories": int(max_categories),
+            "categorical_cols": sorted(categorical_cols) if categorical_cols else [],
         }
 
         schema_rows = con.execute(
@@ -986,16 +989,23 @@ def build_generic(
             f"AND isfinite(CAST({q_x} AS DOUBLE)) AND isfinite(CAST({q_y} AS DOUBLE))"
         )
 
-        # Single-pass aggregation over raw_source_sql: counts, id_col uniqueness, bounds, numeric stats, string distincts
+        explicit_cat_set = set(categorical_cols or [])
+        missing_cats = [c for c in explicit_cat_set if c not in col_type_map]
+        if missing_cats:
+            raise ValueError(f"categorical_cols not found in Parquet schema: {sorted(missing_cats)}")
+
+        # Single-pass aggregation over raw_source_sql: counts, id_col uniqueness, bounds, numeric stats, string/explicit-cat distincts
         numeric_payload = [
             c
             for c in payload_cols
-            if ArrowTilesBuilder._base_duckdb_type(col_type_map[c]) in DUCKDB_NUMERIC_TYPES
+            if c not in explicit_cat_set
+            and ArrowTilesBuilder._base_duckdb_type(col_type_map[c]) in DUCKDB_NUMERIC_TYPES
         ]
         string_payload = [
             c
             for c in payload_cols
-            if ArrowTilesBuilder._base_duckdb_type(col_type_map[c]) in ("VARCHAR", "STRING", "TEXT")
+            if c in explicit_cat_set
+            or ArrowTilesBuilder._base_duckdb_type(col_type_map[c]) in ("VARCHAR", "STRING", "TEXT")
         ]
 
         agg_items = [
@@ -1215,7 +1225,7 @@ def build_gaia(
     input_parquet: str | os.PathLike[str] | list[str],
     output_path: str | os.PathLike[str],
     row_limit: int | None = None,
-    max_capacity: int = DEFAULT_TILE_CAPACITY,
+    max_capacity: int = DEFAULT_GAIA_TILE_CAPACITY,
     max_zoom: int = DEFAULT_NOMINAL_MAX_ZOOM,
     max_tile_rows: int | None = None,
     sampling: str = "even_coverage",

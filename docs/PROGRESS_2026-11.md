@@ -367,3 +367,44 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
 - **Questions for owner (`⛔ D7` Stop Gate before Phase 4):**
   1. **⛔ `D7` (Default Sampling Mode for Generic Builds):** Having compared full 2.84M-row LMSys (`SplitMix64(seed=42)`) in **`even_coverage`** (`316x316` sub-grid at `z <= 6`: preserves sparse outer islands & core color contrast at overview; `10,768` tiles, `zoom 0..7`) vs. **`proportional`** (`100,000` rows/tile: true i.i.d. statistical density & only `61` tiles / `zoom 0..4`, with brighter additive saturation in dense cores), which mode should be the default `--sampling` for generic builds (`even_coverage` vs. `proportional`), while keeping `even_coverage` on `--preset gaia`?
   2. **Go-ahead for Phase 4:** Once `D7` is locked, ready to proceed to **Phase 4 (Parquet vs. `.arrowtiles` Benchmark across samples, full LMSys 3-of-38 & full schema, and `>= 100M` Gaia rows -> `⛔ D8, D9, D10`)**?
+
+
+## 2026-11-20 — Phase 4 (finish, paused at `⛔ D8 / D9 / D10`): `D7` locked (`proportional` + `25,000` generic `tile_capacity`), categorical log-density tone mapping (`clusters_14`), `SLO` cold-vs-warm diagnosis, and `.arrowtiles` vs. HTTP-range Parquet benchmark (`100M` Gaia + `2.84M` LMSys)
+
+- **Done:**
+  1. **Owner Decision `D7` Locked + Generic `tile_capacity` Sweep (`arrowtiles/builder.py`, `arrowtiles/__main__.py`, `docs/SPEC.md`):**
+     - Locked **`proportional`** as the default sampling mode for generic builds (`ArrowTilesBuilder.build`, `build_generic`, and `python -m arrowtiles build`), while keeping **`even_coverage`** (`100,000` capacity) on `build_gaia` / `--preset gaia`.
+     - Benchmarked `proportional` `tile_capacity` across `100k`, `50k`, and `25k` on all `2,835,490` LMSys rows (`SplitMix64(seed=42)`) and locked **`DEFAULT_TILE_CAPACITY = 25_000`** (`0.46M` overview points and `40.38 MiB` at `Z=0..2` vs. `1.25M` points and `118.07 MiB` at `100k`; `221` total tiles, `max_compressed_tile = 2.56 MiB`, `3.64x` faster warm burst P95).
+     - Added `--categorical-cols` / `categorical_cols` to `build_generic` for explicit integer cluster encoding (`UInt8`/`UInt16`), added 5 literal 64-bit `SplitMix64` golden test vectors (`0xE220A8397B1DCDAF`, `0xBDD732262FEB6E95`, `0xBA69EC90EB4FEF88`, `0xF3203E9039F4A821`, `0xF1C1278DBFA2126B`) in `tests/test_phase3_priority_and_presets.py`, and recorded the `v0.2` per-tile density/category-count summary grid roadmap item under `"tile_stats"` in `docs/SPEC.md` §6.4.
+  2. **Viewer Log-Density Categorical Tone Mapping & `clusters_14` `D7` Screenshots (`ComputeRasterizer.ts`, `Scatterplot.ts`, `main.ts`):**
+     - Widened `ComputeRasterizer` `accumBuffer` to `3 × u32` (`12 B/px`, clamped to `maxStorageBufferBindingSize`) and implemented **log-density categorical tone mapping** (`brightness = log2(1 + count) / log2(1 + refCount)`, `colour = mean category RGB`), eliminating additive white-out saturation across dense UMAP cores; also switched `Hardware Instanced` categorical blending to `OneMinusSrcAlphaFactor` and auto-registered discrete integer `clusters_*` columns in `main.ts`.
+     - Re-captured matched-camera `Z=2` and `Z=4` WebGPU screenshots colored by `clusters_14` across `proportional (25k)`, `proportional (100k)`, and `even_coverage (100k)` (`0` console/page errors).
+  3. **Diagnosed Red `SLO Status (P95 < 50ms)` (`306–704 ms`):**
+     - Isolated cold page-load vs. warm pan/zoom telemetry: cold first-batch `workerMs` is `204.7–344.5 ms` (main-thread `tWorkerStart` stamped before Vite worker module load + `zstd.wasm` compilation, vs. `6.7–22.1 ms` warm) and `t0` includes cold root/leaf directory decompression; because the rolling window holds `50` tiles while `Z=0..2` loads `21` tiles, `p95` (`index 19/21`) stays pinned to the cold boot spike. At `100k` capacity on 36-col LMSys there was also a real payload cost (`155.2 ms` warm median / `430.3 ms` warm P95), reduced to `76.2 ms` warm median (`22.1 ms` worker) / `118.2 ms` warm 64-tile burst P95 at `25k` capacity.
+  4. **Executed Full Phase 4 `.arrowtiles` vs. Sorted HTTP-Range Parquet Benchmark (`docs/BENCHMARK_parquet_vs_arrowtiles.md`):**
+     - Benchmarked `.arrowtiles` (`v0.1`) against **Layout 1 (`parquet_tile_rg`: 1 RG/tile + index)** and **Layout 2 (`parquet_page_idx`: `250k`-row RGs + Parquet V2 Page Index `OffsetIndex` + index)** across `gaia_sample` (`150k`), `lmsys_sample` (`100k`), `lmsys_full` (`2.84M`, 3-of-38 projection & 36-col full schema), and `gaia_100m` (`100,000,000` Gaia stars, 4-col optical & 9-col full schema) in Chrome Web Workers (`6` workers, shared `@bokuweb/zstd-wasm` WASM Zstd, `Cache-Control: no-store`, 5 runs each reporting Median + P95), then cleaned up the `~8 GB` temporary 100M benchmark files on `D:`.
+
+- **Evidence:**
+  - **Writer `pytest` Suite:** `48 passed, 1 skipped in 10.58s`.
+  - **Viewer TypeScript & Production Build:** `npx tsc --noEmit` (`exit code 0`) and `npm run build` (`exit code 0`, built in `58.59s`).
+  - **Headline Benchmark Numbers (see full tables in `docs/BENCHMARK_parquet_vs_arrowtiles.md`):**
+    - `gaia_100m` (`100,000,000` rows, `9,573` tiles, 4-col optical):
+      - `.arrowtiles`: `2.441 GiB` file, **`6.8 ms` handshake (`17.0 KB`, `2` reqs)**, **`180.8 ms` TTFF (`24` reqs)**, `20.5 MB` peak JS+buffers.
+      - `parquet_tile_rg`: `2.547 GiB` file, **`5,021.8 ms` handshake (`8,641.6 KB` footer+index)**, `5,147.8 ms` TTFF (`46` reqs), `121.2 MB` peak JS+buffers.
+      - `parquet_page_idx`: `2.536 GiB` file, `112.8 ms` handshake (`839.9 KB`), `289.6 ms` TTFF (**`147` HTTP reqs**; `460.0 ms` / **`243` reqs** on 9-col Gaia).
+    - `lmsys_full` (`2,835,490` rows, `221` tiles, `36` payload cols):
+      - Full 36-col schema: `.arrowtiles` **`249.3 ms` TTFF (`23` reqs)** / **`113.7 ms` Deep Zoom (`16` reqs)** vs. `448.3 ms` / `134.3 ms` (`parquet_tile_rg`) and `1,116.6 ms` (`839` reqs) / `836.0 ms` (`684` reqs) (`parquet_page_idx`).
+      - 3-of-38 projection (`x_u16, y_u16, clusters_14`): `parquet_page_idx` **`158.1 ms` TTFF (`4.62 MiB`, `113` reqs)** and `parquet_tile_rg` `235.6 ms` TTFF / **`37.5 ms` Deep Zoom (`1.30 MiB`, `32` reqs)** vs. monolithic 36-col `.arrowtiles` `212.1 ms` TTFF (`40.39 MiB`, `23` reqs) / `107.5 ms` Deep Zoom (`24.11 MiB`, `16` reqs).
+  - **Updated `clusters_14` Log-Density Screenshots:**
+    - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase4_d7_clusters14_proportional_25k_z2.png`
+    - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase4_d7_clusters14_proportional_25k_z4.png`
+    - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase4_d7_clusters14_proportional_100k_z2.png`
+    - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase4_d7_clusters14_even_coverage_z2.png`
+
+- **Not done / failed:**
+  - **`git push`:** Not run (holding local commits on `revival/2026-11-wip` unless explicitly requested per `⛔` guardrail).
+
+- **Questions for owner (`⛔ D8 / D9 / D10` Stop Gate before Phase 5):**
+  1. **⛔ `D8` (Container Choice):** Keep **`.arrowtiles` (`v0.1`)** as our primary spatial pyramid container (pairing wide 30+-column tables with `--columns` or `v0.2` `"layers"` / sidecar Parquet attribute lookup), or pivot to sorted Parquet?
+  2. **⛔ `D9` (Renderer Architecture for Phases 5–6):** Unify on **`ComputeRasterizer` ("Compute-Only")** (moving 2s axis transitions into WGSL and retiring `Scatterplot` Three.js instanced point meshes for clean direct `GPUBuffer` VRAM management), or keep Dual-Renderer (`Compute (Atomic)` + `Hardware Instanced`)?
+  3. **⛔ `D10` (Continuous / Optical Tone Mapping):** Keep per-point ACES + sRGB transfer in Gaia Mode 0 & Star Trails Mode 3 (widening channels to `16-bit` in Phase 5b to preserve the tuned Milky Way look), or move continuous/optical tone mapping into the Resolve pass?

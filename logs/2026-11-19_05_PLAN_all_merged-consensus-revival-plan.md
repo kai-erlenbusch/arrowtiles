@@ -140,12 +140,14 @@ flowchart TD
 1. Remove `sort_col="abs_m"` default; default to an explicit **SplitMix64** integer mixing function over `(row_id, seed)` (`{"kind": "random", "seed": N}`) instead of DuckDB's version-dependent `hash()`, ensuring deterministic cross-version random ranking.
 2. Add explicit `--preset gaia` (Hammer projection, `phot_g_mean_mag ASC`—accepting both `phot_g_mean_mag` and legacy `abs_m` in viewer—and `even_coverage`).
 3. Pass `tile_capacity` and `sampling` (`even_coverage` vs. `proportional`) explicitly to `run_bucketer` (`max_capacity = 100_000` means `100,000`).
-4. Display active `priority` and `sampling` in viewer HUD; `⛔ D7` owner views LMSys in both modes and picks default.
+4. Display active `priority` and `sampling` in viewer HUD; `⛔ D7` locked: **`proportional`** is the generic default (with benchmark-selected `DEFAULT_TILE_CAPACITY = 25,000`), while `--preset gaia` stays **`even_coverage`** (`100,000` capacity).
 
 ---
 
 ## 6. Phase 4: Parquet Benchmark (`⛔ D8`) + Pre-Phase-5 Renderer Gate (`⛔ D9, D10`)
 
+- Benchmark generic `proportional` `tile_capacity` (`100k` / `50k` / `25k`) on 2.84M-row LMSys (`Z=2` bytes, points, and cold vs. warm tile latency) and diagnose the viewer's `SLO Status (P95 < 50ms)` cold-load burst vs. steady-state payload latency.
+- Replace additive categorical blending in the viewer with **log-density categorical tone mapping** (`brightness = log2(1 + count)`, `colour = mean category`) so dense cores never saturate to white, and re-capture `D7` `Z=2`/`Z=4` screenshots colored by `clusters_14` (recording `v0.2` roadmap item for per-tile precomputed density/category-count grids under `"tile_stats"`).
 - Benchmark `.arrowtiles` vs. **two** sorted Parquet layouts ((1) 1 row group/tile + index, (2) larger row groups + Parquet Page Index) across samples, full LMSys (3-of-38 projection + full schema), and $\ge 100\text{M}$ Gaia rows (5 runs each, median + P95: metadata bytes, TTFF, deep-zoom load, worker decode ms, peak JS/WASM RAM) in `docs/BENCHMARK_parquet_vs_arrowtiles.md`.
 - Pause at `⛔ D8` (container choice) and `⛔ D9 / D10` (Compute-Only vs. Dual-Renderer, and per-point vs. Resolve tone mapping).
 

@@ -9,6 +9,7 @@ from typing import Sequence
 
 from arrowtiles.builder import (
     DEFAULT_AUTO_MAX_CATEGORIES,
+    DEFAULT_GAIA_TILE_CAPACITY,
     DEFAULT_MAX_TILE_ROWS,
     DEFAULT_NOMINAL_MAX_ZOOM,
     DEFAULT_RANDOM_SEED,
@@ -27,10 +28,10 @@ def _cmd_build(args: argparse.Namespace) -> int:
             input_parquet=args.input,
             output_path=args.output,
             row_limit=args.row_limit,
-            max_capacity=args.tile_capacity,
+            max_capacity=args.tile_capacity if args.tile_capacity is not None else DEFAULT_GAIA_TILE_CAPACITY,
             max_zoom=args.max_zoom,
             max_tile_rows=args.max_tile_rows,
-            sampling=args.sampling,
+            sampling=args.sampling if args.sampling is not None else "even_coverage",
             grid_size=args.grid_size,
             allow_oversize_leaves=args.allow_oversize_leaves,
             custom_config=args.config,
@@ -44,6 +45,11 @@ def _cmd_build(args: argparse.Namespace) -> int:
             print("Error: --x-col and --y-col are required for generic builds.", file=sys.stderr)
             return 2
         cols = [c.strip() for c in args.columns.split(",") if c.strip()] if args.columns else None
+        cat_cols = (
+            [c.strip() for c in args.categorical_cols.split(",") if c.strip()]
+            if args.categorical_cols
+            else None
+        )
         summary = build_generic(
             input_parquet=args.input,
             output_path=args.output,
@@ -53,11 +59,12 @@ def _cmd_build(args: argparse.Namespace) -> int:
             sort_dir=args.sort_dir,
             id_col=args.id_col,
             columns=cols,
+            categorical_cols=cat_cols,
             keep_source_xy=args.keep_source_xy,
-            max_capacity=args.tile_capacity,
+            max_capacity=args.tile_capacity if args.tile_capacity is not None else DEFAULT_TILE_CAPACITY,
             max_zoom=args.max_zoom,
             max_tile_rows=args.max_tile_rows,
-            sampling=args.sampling,
+            sampling=args.sampling if args.sampling is not None else "proportional",
             grid_size=args.grid_size,
             seed=args.seed,
             max_categories=args.max_categories,
@@ -139,11 +146,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_build.add_argument("--sort-dir", choices=["ASC", "DESC", "asc", "desc"], default="ASC")
     p_build.add_argument("--id-col", default=None, help="Optional unique integer row ID column")
     p_build.add_argument("--columns", default=None, help="Comma-separated subset of payload columns to retain")
+    p_build.add_argument(
+        "--categorical-cols",
+        default=None,
+        help="Comma-separated columns (including integer cluster IDs) to encode as v0.1 categoricals",
+    )
     p_build.add_argument("--keep-source-xy", action="store_true", help="Retain raw source X/Y columns in tiles")
-    p_build.add_argument("--tile-capacity", type=int, default=DEFAULT_TILE_CAPACITY)
+    p_build.add_argument(
+        "--tile-capacity",
+        type=int,
+        default=None,
+        help="Per-tile capacity at z < nominal_max_zoom (default: 25,000 generic / 100,000 --preset gaia)",
+    )
     p_build.add_argument("--max-tile-rows", type=int, default=DEFAULT_MAX_TILE_ROWS)
     p_build.add_argument("--max-zoom", type=int, default=DEFAULT_NOMINAL_MAX_ZOOM)
-    p_build.add_argument("--sampling", choices=["even_coverage", "proportional"], default="even_coverage")
+    p_build.add_argument(
+        "--sampling",
+        choices=["even_coverage", "proportional"],
+        default=None,
+        help="Pyramid sampling mode (default: proportional for generic / even_coverage for --preset gaia)",
+    )
     p_build.add_argument("--grid-size", type=int, default=None)
     p_build.add_argument("--seed", type=int, default=DEFAULT_RANDOM_SEED)
     p_build.add_argument("--max-categories", type=int, default=DEFAULT_AUTO_MAX_CATEGORIES)

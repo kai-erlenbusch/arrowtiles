@@ -222,8 +222,12 @@ def build_all_samples(
     if build_d7_comparison:
         full_src = _find_full_lmsys_source()
         if full_src is not None:
-            for mode in ("even_coverage", "proportional"):
-                d7_out = output_dir / f"lmsys_d7_{mode}.arrowtiles"
+            for mode, cap in (("even_coverage", 100_000), ("proportional", 25_000)):
+                d7_out = output_dir / (
+                    "lmsys_d7_even_coverage.arrowtiles"
+                    if mode == "even_coverage"
+                    else "lmsys_d7_proportional_25k.arrowtiles"
+                )
                 duck_tmp = output_dir / f"_tmp_lmsys_d7_{mode}"
                 shutil.rmtree(duck_tmp, ignore_errors=True)
                 try:
@@ -235,13 +239,14 @@ def build_all_samples(
                         sort_col=None,
                         seed=42,
                         sampling=mode,
-                        max_capacity=100_000,
+                        categorical_cols=["clusters_07", "clusters_14", "clusters_28"],
+                        max_capacity=cap,
                         max_zoom=14,
                         memory_limit="16GB",
                         temp_dir=duck_tmp,
                         custom_config=json.dumps(
                             {
-                                "colorField": "model",
+                                "colorField": "clusters_14",
                                 "sizeField": "num_of_tokens",
                                 "colorScale": "viridis",
                             }

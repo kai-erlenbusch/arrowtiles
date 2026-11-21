@@ -35,16 +35,16 @@ def test_splitmix64_rust_python_duckdb_bit_exact_equivalence() -> None:
     """Verify Rust, Python, and DuckDB UHUGEINT SplitMix64 match bit-for-bit with zero overflow."""
     assert hasattr(_core, "splitmix64_hash")
 
-    # Known golden test vectors pinned to SPEC.md §6.1 so the mixing function can never drift
+    # Independent 64-bit literal reference vectors (NOT computed via splitmix64_py) pinned to SPEC.md §6.1
     golden_vectors = [
-        (0, 0, 16294208416658607535),
-        (0, 42, splitmix64_py(0, 42)),
-        (1, 42, splitmix64_py(1, 42)),
-        (MASK_U64, -1, splitmix64_py(MASK_U64, -1)),
+        (0, 0, 0xE220A8397B1DCDAF),                      # 16294208416658607535
+        (0, 42, 0xBDD732262FEB6E95),                     # 13679457532755275413
+        (1, 42, 0xBA69EC90EB4FEF88),                     # 13432527470776545160
+        (0xFFFFFFFFFFFFFFFF, -1, 0xF3203E9039F4A821),    # 17519071339639777313
+        (123456789, -987654321, 0xF1C1278DBFA2126B),     # 17420248323404730987
     ]
-    # Verify (0, 0) against standard Stafford Mix13 of SplitMix64 first step (0 + 0x9E3779B97F4A7C15)
-    assert splitmix64_py(0, 0) == 16294208416658607535
     for r_id, seed, expected in golden_vectors:
+        assert splitmix64_py(r_id, seed) == expected
         assert _core.splitmix64_hash(r_id, seed) == expected
 
     edge_row_ids = [0, 1, 42, (1 << 32) - 1, 1 << 53, (1 << 63) - 1, 1 << 63, MASK_U64]
@@ -136,12 +136,37 @@ def test_default_seeded_random_priority_and_splitmix64_ranking(tmp_path: Path) -
             SELECT
                 (i % 25) / 25.0 AS x,
                 (i // 25) / 25.0 AS y,
-                CAST(i AS DOUBLE) AS val
+                CAST(i AS DOUBLE) AS val,
+                CAST(i % 5 AS INTEGER) AS cluster_id
             FROM range(500) AS t(i)
         ) TO '{src_pq.as_posix()}' (FORMAT PARQUET)
         """
     )
     con.close()
+
+    # Verify D7 defaults when sampling and max_capacity are omitted, plus explicit categorical_cols on INTEGER
+    out_defaults = tmp_path / "gen_defaults.arrowtiles"
+    build_generic(
+        input_parquet=src_pq,
+        output_path=out_defaults,
+        x_col="x",
+        y_col="y",
+        categorical_cols=["cluster_id"],
+        temp_dir=tmp_path / "tmp_defaults",
+        show_progress=False,
+    )
+    val_def = validate_file(out_defaults, expected_input_rows=500)
+    assert val_def.ok, val_def.errors
+    with ArrowTilesReader(out_defaults) as rdef:
+        mdef = rdef.metadata()
+        assert mdef["sampling"] == "proportional"
+        assert mdef["tile_capacity"] == 25_000
+        assert mdef["stats"]["cluster_id"] == {
+            "type": "categorical",
+            "categories": ["0", "1", "2", "3", "4"],
+            "null_count": 0,
+        }
+        assert rdef.schema().field("cluster_id").type == pa.uint8()
 
     out_a = tmp_path / "gen_seed42_a.arrowtiles"
     out_b = tmp_path / "gen_seed42_b.arrowtiles"
@@ -155,7 +180,6 @@ def test_default_seeded_random_priority_and_splitmix64_ranking(tmp_path: Path) -
             y_col="y",
             max_capacity=40,
             max_zoom=4,
-            sampling="proportional",
             seed=s,
             temp_dir=tmp_path / f"tmp_gen_{idx}",
             show_progress=False,
@@ -164,6 +188,7 @@ def test_default_seeded_random_priority_and_splitmix64_ranking(tmp_path: Path) -
     assert _sha256(out_a) == _sha256(out_b)
     with ArrowTilesReader(out_a) as ra, ArrowTilesReader(out_c) as rc:
         assert ra.metadata()["priority"] == {"kind": "random", "seed": 42}
+        assert ra.metadata()["sampling"] == "proportional"
         assert rc.metadata()["priority"] == {"kind": "random", "seed": 99}
         ids_42 = set(ra.read_tile(0, 0, 0)["row_id"].to_pylist())
         ids_99 = set(rc.read_tile(0, 0, 0)["row_id"].to_pylist())
