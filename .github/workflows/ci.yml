@@ -36,11 +36,11 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build Rust PyO3 Core & Install Package + Dev Dependencies
+      - name: Build Rust PyO3 Core & Run Pytest Suite
+        shell: bash
         run: |
+          python -m venv .venv
+          if [ -f .venv/bin/activate ]; then source .venv/bin/activate; else source .venv/Scripts/activate; fi
           python -m pip install --upgrade pip "maturin>=1.4,<2.0"
-          python -m pip install -e ".[dev]" --no-build-isolation
-          maturin develop --release
-
-      - name: Run Pytest Suite
-        run: python -m pytest -v -rs -p no:cacheprovider
+          maturin develop --release --extras dev
+          python -m pytest -v -rs -p no:cacheprovider
