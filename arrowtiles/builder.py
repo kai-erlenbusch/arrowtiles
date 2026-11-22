@@ -285,8 +285,7 @@ class ArrowTilesBuilder:
 
         row = self.con.execute(
             f"SELECT {', '.join(aggs)} FROM ({input_query}) AS src"
-        ).fetchone()
-        assert row is not None
+        ).fetchall()[0]
 
         query_total_in = int(row[0] or 0)
         query_valid_in = int(row[1] or 0)
@@ -642,7 +641,7 @@ class ArrowTilesBuilder:
                     FROM ({valid_projected_sql}) AS __at_p1
                     ORDER BY "__at_sort_key" {order_dir_pass}, "row_id" ASC
                 """
-                reader_pass1 = self.con.execute(query_pass1).to_arrow_reader(100_000)
+                reader_pass1 = self.con.sql(query_pass1).to_arrow_reader(batch_size=100_000)
 
                 c_stream_pass1 = pc.ffi.new("struct ArrowArrayStream*")
                 ptr_pass1 = int(pc.ffi.cast("uintptr_t", c_stream_pass1))
@@ -738,7 +737,7 @@ class ArrowTilesBuilder:
 
             first_part_sql = self._sql_str(Path(partitions[0]).as_posix())
             first_part_schema = (
-                self.con.execute(f"SELECT * FROM read_parquet({first_part_sql}) LIMIT 0")
+                self.con.sql(f"SELECT * FROM read_parquet({first_part_sql}) LIMIT 0")
                 .to_arrow_table()
                 .schema
             )
@@ -774,7 +773,7 @@ class ArrowTilesBuilder:
                     FROM read_parquet({part_sql})
                     ORDER BY final_tile_id ASC, "__at_sort_key" {order_dir_pass}, "row_id" ASC
                 """
-                reader_pass2 = self.con.execute(query_pass2).to_arrow_reader(100_000)
+                reader_pass2 = self.con.sql(query_pass2).to_arrow_reader(batch_size=100_000)
 
                 c_stream_pass2 = pc.ffi.new("struct ArrowArrayStream*")
                 ptr_pass2 = int(pc.ffi.cast("uintptr_t", c_stream_pass2))
@@ -1076,8 +1075,7 @@ def build_generic(
 
         agg_row = con.execute(
             f"SELECT {', '.join(agg_items)} FROM ({raw_source_sql}) AS raw_src"
-        ).fetchone()
-        assert agg_row is not None
+        ).fetchall()[0]
 
         input_rows = int(agg_row[0] or 0)
         valid_rows = int(agg_row[1] or 0)
@@ -1392,8 +1390,7 @@ def build_gaia(
 
         preflight_row = con.execute(
             f"SELECT {', '.join(gaia_aggs)} FROM ({raw_gaia_sql}) AS g"
-        ).fetchone()
-        assert preflight_row is not None
+        ).fetchall()[0]
         total_in, valid_in = int(preflight_row[0] or 0), int(preflight_row[1] or 0)
         if valid_in == 0:
             raise ValueError("Gaia input contains 0 rows with finite (ra, dec)")

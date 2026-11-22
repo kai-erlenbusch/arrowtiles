@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use arrow::array::{
-    Array, Float64Array, RecordBatch, RecordBatchReader, UInt16Array, UInt64Array, UInt8Array,
+    make_array, new_empty_array, Array, Float64Array, MutableArrayData, RecordBatch,
+    RecordBatchReader, UInt16Array, UInt64Array, UInt8Array,
 };
 use arrow::compute::{cast, take};
 use arrow::datatypes::{DataType, Field, Schema};
@@ -540,6 +541,61 @@ impl Compressor for PrecompressedZstd {
     }
 }
 
+/// Canonicalize an Arrow column before IPC serialization so `offset == 0`,
+/// trailing validity/boolean padding bits are zeroed, and any `NULL` slots carry
+/// deterministic zero bytes/empty slices regardless of upstream allocator scratch memory
+/// (e.g. DuckDB 2.0 uninitialized flat-vector bytes at masked-out `NULL` positions).
+fn canonicalize_tile_column(col: &Arc<dyn Array>) -> Arc<dyn Array> {
+    let len = col.len();
+    if len == 0 {
+        return new_empty_array(col.data_type());
+    }
+
+    let null_count = col.null_count();
+    if null_count == 0
+        && col.nulls().is_none()
+        && col.offset() == 0
+        && !matches!(
+            col.data_type(),
+            DataType::Boolean
+                | DataType::Utf8
+                | DataType::LargeUtf8
+                | DataType::Binary
+                | DataType::LargeBinary
+        )
+    {
+        return col.clone();
+    }
+
+    let data = col.to_data();
+    if null_count == 0 {
+        let mut mutable = MutableArrayData::new(vec![&data], false, len);
+        mutable.extend(0, 0, len);
+        return make_array(mutable.freeze());
+    }
+
+    let mut mutable = MutableArrayData::new(vec![&data], true, len);
+    let mut idx = 0;
+    while idx < len {
+        if col.is_valid(idx) {
+            let start = idx;
+            idx += 1;
+            while idx < len && col.is_valid(idx) {
+                idx += 1;
+            }
+            mutable.extend(0, start, idx);
+        } else {
+            let start = idx;
+            idx += 1;
+            while idx < len && col.is_null(idx) {
+                idx += 1;
+            }
+            mutable.extend_nulls(idx - start);
+        }
+    }
+    make_array(mutable.freeze())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn flush_chunk_buffer(
     py: Python,
@@ -584,7 +640,7 @@ fn flush_chunk_buffer(
                     export_batches.push(RecordBatch::try_new(schema.clone(), cols)?);
                 }
 
-                let single_batch = if export_batches.len() == 1 {
+                let raw_single_batch = if export_batches.len() == 1 {
                     export_batches
                         .into_iter()
                         .next()
@@ -592,6 +648,13 @@ fn flush_chunk_buffer(
                 } else {
                     arrow::compute::concat_batches(&schema, &export_batches)?
                 };
+
+                let canonical_cols: Vec<Arc<dyn Array>> = raw_single_batch
+                    .columns()
+                    .iter()
+                    .map(canonicalize_tile_column)
+                    .collect();
+                let single_batch = RecordBatch::try_new(schema.clone(), canonical_cols)?;
 
                 let tile_rows = u32::try_from(single_batch.num_rows())
                     .map_err(|_| anyhow::anyhow!("Tile {} row count overflows u32", tid))?;

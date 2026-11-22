@@ -101,7 +101,7 @@ def build_all_samples(
                     SELECT * FROM faint_mix
                 ) TO '{sampled_pq.as_posix()}' (FORMAT PARQUET)
                 """
-            ).fetchone()[0]
+            ).fetchall()[0][0]
             con.close()
 
             build_gaia(

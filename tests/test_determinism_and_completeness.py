@@ -41,7 +41,10 @@ def test_byte_identical_sha256_unique_and_tied_priorities(
                     WHEN 2 THEN 'g2'
                     WHEN 3 THEN 'g3'
                     ELSE 'g4'
-                END AS grp
+                END AS grp,
+                CASE WHEN i % 7 = 0 THEN NULL ELSE CAST(i * 1.5 AS DOUBLE) END AS opt_num,
+                CASE WHEN i % 3 = 0 THEN NULL WHEN i % 2 = 0 THEN TRUE ELSE FALSE END AS opt_flag,
+                CASE WHEN i % 6 = 0 THEN NULL ELSE 'note_' || CAST(i % 25 AS VARCHAR) END AS opt_note
             FROM range({n_rows}) AS t(i)
         ) TO '{unique_pq.as_posix()}' (FORMAT PARQUET)
         """
@@ -60,10 +63,10 @@ def test_byte_identical_sha256_unique_and_tied_priorities(
     )
     con.close()
 
-    for label, src_pq, sort_col in [
-        ("unique", unique_pq, "priority_val"),
-        ("all_tied", tied_pq, "priority_val"),
-        ("random_seed", unique_pq, None),
+    for label, src_pq, sort_col, extra_cols, max_cats in [
+        ("unique", unique_pq, "priority_val", ["priority_val", "grp", "opt_num", "opt_flag", "opt_note"], 10),
+        ("all_tied", tied_pq, "priority_val", None, 4096),
+        ("random_seed", unique_pq, None, ["priority_val", "grp", "opt_num", "opt_flag", "opt_note"], 10),
     ]:
         out1 = tmp_path / f"{label}_{sampling_mode}_1.arrowtiles"
         out2 = tmp_path / f"{label}_{sampling_mode}_2.arrowtiles"
@@ -74,6 +77,8 @@ def test_byte_identical_sha256_unique_and_tied_priorities(
             x_col="x",
             y_col="y",
             sort_col=sort_col,
+            columns=extra_cols,
+            max_categories=max_cats,
             seed=12345,
             sampling=sampling_mode,
             max_capacity=300,
@@ -88,6 +93,8 @@ def test_byte_identical_sha256_unique_and_tied_priorities(
             x_col="x",
             y_col="y",
             sort_col=sort_col,
+            columns=extra_cols,
+            max_categories=max_cats,
             seed=12345,
             sampling=sampling_mode,
             max_capacity=300,

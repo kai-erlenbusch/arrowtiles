@@ -58,7 +58,7 @@ def test_splitmix64_rust_python_duckdb_bit_exact_equivalence() -> None:
                 py_val = splitmix64_py(r_id, seed)
                 rs_val = _core.splitmix64_hash(r_id, seed)
                 sql_expr = _duckdb_splitmix64_sql(f"CAST({r_id} AS UBIGINT)", seed)
-                duck_val = con.execute(f"SELECT {sql_expr}").fetchone()[0]
+                duck_val = con.execute(f"SELECT {sql_expr}").fetchall()[0][0]
                 assert py_val == rs_val == duck_val, (
                     f"SplitMix64 mismatch for row_id={r_id}, seed={seed}: "
                     f"py={py_val}, rust={rs_val}, duckdb={duck_val}"

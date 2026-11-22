@@ -37,7 +37,7 @@ def test_lmsys_smoke_build_on_sample(mock_lmsys_parquet_path: Path, tmp_path: Pa
         SELECT MIN(x), MAX(x), MIN(y), MAX(y)
         FROM (SELECT * FROM read_parquet('{mock_lmsys_parquet_path.as_posix()}') LIMIT {sample_limit})
         """
-    ).fetchone()
+    ).fetchall()[0]
     con.close()
 
     min_x, max_x, min_y, max_y = bounds
