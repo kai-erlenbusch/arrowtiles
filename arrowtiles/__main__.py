@@ -65,6 +65,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
             columns=cols,
             categorical_cols=cat_cols,
             keep_source_xy=args.keep_source_xy,
+            keep_float64=args.keep_float64,
             max_capacity=args.tile_capacity if args.tile_capacity is not None else DEFAULT_TILE_CAPACITY,
             max_zoom=args.max_zoom,
             max_tile_rows=args.max_tile_rows,
@@ -162,6 +163,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Space- or comma-separated columns (including integer cluster IDs) to encode as v0.1 categoricals",
     )
     p_build.add_argument("--keep-source-xy", action="store_true", help="Retain raw source X/Y columns in tiles")
+    p_build.add_argument(
+        "--keep-float64",
+        action="store_true",
+        help="Retain Float64 (DOUBLE) payload columns instead of downcasting in-range floats to Float32",
+    )
     p_build.add_argument(
         "--tile-capacity",
         type=int,

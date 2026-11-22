@@ -8,7 +8,9 @@ import json
 import math
 import multiprocessing
 import os
+import re
 import shutil
+import struct
 import time
 from pathlib import Path
 from typing import Any
@@ -30,6 +32,14 @@ MAX_CATEGORIES_CAP = 65_535
 DEFAULT_AUTO_MAX_CATEGORIES = 4_096
 OVERVIEW_Z0_2_WARN_BYTES = 10 * 1024 * 1024  # 10 MiB compressed Z=0..2 overview threshold
 JS_MAX_SAFE_INTEGER = 9_007_199_254_740_991   # 2^53 - 1
+FLOAT32_SAFE_MAX = 3.4028234e38               # Safe finite IEEE-754 Float32 ceiling (< FLT_MAX)
+PANDAS_INDEX_COL_RE = re.compile(r"^__index_level_\d+__$")
+
+
+def _round_f32(val: float) -> float:
+    """Round a finite float to exact IEEE-754 Float32 precision, normalizing -0.0 to 0.0."""
+    rounded = struct.unpack("<f", struct.pack("<f", val))[0]
+    return 0.0 if rounded == 0.0 else rounded
 
 SPLITMIX64_GAMMA = 11400714819323198485  # 0x9E3779B97F4A7C15
 SPLITMIX64_MUL1 = 13787848793156543929   # 0xBF58476D1CE4E5B9
@@ -351,6 +361,7 @@ class ArrowTilesBuilder:
         chunk_buffer_limit: int = 500_000,
         custom_metadata: str | None = None,
         categorical_columns: dict[str, list[str]] | None = None,
+        downcast_float32_cols: set[str] | None = None,
         bounds: dict[str, float] | None = None,
         stats: dict[str, dict[str, Any]] | None = None,
         view: dict[str, Any] | None = None,
@@ -495,31 +506,11 @@ class ArrowTilesBuilder:
             priority_meta = {"kind": "random", "seed": int(seed)}
             order_dir_pass = "ASC NULLS LAST"
 
-        select_exprs: list[str] = [f"CAST(src.{q_id} AS UBIGINT) AS \"row_id\""]
-        join_clauses: list[str] = []
-        retained_col_types: list[tuple[str, str]] = []
-        source_col_types_for_stats: list[tuple[str, str]] = []
-
-        for join_idx, col in enumerate(col_order):
-            if col == id_col or col in internal_xy:
-                continue
-            qc = q(col)
-            source_col_types_for_stats.append((col, schema_map[col]))
-            if col in cat_lookup_tables:
-                tbl_name, code_sql_type = cat_lookup_tables[col]
-                alias = f"__at_cj_{join_idx}"
-                join_clauses.append(
-                    f"LEFT JOIN {q(tbl_name)} AS {alias} ON CAST(src.{qc} AS VARCHAR) = {alias}.label"
-                )
-                select_exprs.append(f"{alias}.code AS {qc}")
-                retained_col_types.append((col, code_sql_type))
-            else:
-                select_exprs.append(f"src.{qc} AS {qc}")
-                retained_col_types.append((col, schema_map[col]))
-
-        select_exprs.append(f"CAST(src.{q_x} AS DOUBLE) AS \"__at_x_norm\"")
-        select_exprs.append(f"CAST(src.{q_y} AS DOUBLE) AS \"__at_y_norm\"")
-        select_exprs.append(f"{sort_key_expr} AS \"__at_sort_key\"")
+        source_col_types_for_stats: list[tuple[str, str]] = [
+            (col, schema_map[col])
+            for col in col_order
+            if col != id_col and col not in internal_xy
+        ]
 
         finite_pred = (
             f"src.{q_x} IS NOT NULL AND src.{q_y} IS NOT NULL "
@@ -542,6 +533,61 @@ class ArrowTilesBuilder:
             )
             total_dropped_rows = int(pre_dropped_rows) + query_dropped
             computed_stats = stats if stats is not None else direct_stats
+
+        downcast_f32_set: set[str] = set()
+        if downcast_float32_cols:
+            for cand in downcast_float32_cols:
+                if (
+                    cand in schema_map
+                    and cand not in cat_lookup_tables
+                    and self._base_duckdb_type(schema_map[cand]) == "DOUBLE"
+                ):
+                    if (
+                        stats is None
+                        and cand in computed_stats
+                        and computed_stats[cand].get("type") == "numeric"
+                    ):
+                        c_min_v = float(computed_stats[cand]["min"])
+                        c_max_v = float(computed_stats[cand]["max"])
+                        if abs(c_min_v) <= FLOAT32_SAFE_MAX and abs(c_max_v) <= FLOAT32_SAFE_MAX:
+                            downcast_f32_set.add(cand)
+                            computed_stats[cand]["min"] = _round_f32(c_min_v)
+                            computed_stats[cand]["max"] = _round_f32(c_max_v)
+                        else:
+                            print(
+                                f"[ArrowTiles] Retaining Float64 for column '{cand}' "
+                                f"(range [{c_min_v:.3g}, {c_max_v:.3g}] exceeds Float32 bounds).",
+                                flush=True,
+                            )
+                    else:
+                        downcast_f32_set.add(cand)
+
+        select_exprs: list[str] = [f"CAST(src.{q_id} AS UBIGINT) AS \"row_id\""]
+        join_clauses: list[str] = []
+        retained_col_types: list[tuple[str, str]] = []
+
+        for join_idx, col in enumerate(col_order):
+            if col == id_col or col in internal_xy:
+                continue
+            qc = q(col)
+            if col in cat_lookup_tables:
+                tbl_name, code_sql_type = cat_lookup_tables[col]
+                alias = f"__at_cj_{join_idx}"
+                join_clauses.append(
+                    f"LEFT JOIN {q(tbl_name)} AS {alias} ON CAST(src.{qc} AS VARCHAR) = {alias}.label"
+                )
+                select_exprs.append(f"{alias}.code AS {qc}")
+                retained_col_types.append((col, code_sql_type))
+            elif col in downcast_f32_set:
+                select_exprs.append(f"CAST(src.{qc} AS FLOAT) AS {qc}")
+                retained_col_types.append((col, "FLOAT"))
+            else:
+                select_exprs.append(f"src.{qc} AS {qc}")
+                retained_col_types.append((col, schema_map[col]))
+
+        select_exprs.append(f"CAST(src.{q_x} AS DOUBLE) AS \"__at_x_norm\"")
+        select_exprs.append(f"CAST(src.{q_y} AS DOUBLE) AS \"__at_y_norm\"")
+        select_exprs.append(f"{sort_key_expr} AS \"__at_sort_key\"")
 
         valid_projected_sql = f"""
             SELECT {', '.join(select_exprs)}
@@ -572,7 +618,7 @@ class ArrowTilesBuilder:
             "grid_size": int(eff_grid_size),
             "priority": priority_meta,
             "id_col": id_col,
-            "retained_columns": [c for c, _ in retained_col_types],
+            "retained_columns": [[c, t] for c, t in retained_col_types],
             "categorical_columns": cat_cols,
             "dropped_columns": dropped_cols_list,
             "allow_oversize_leaves": bool(allow_oversize_leaves),
@@ -882,6 +928,7 @@ def build_generic(
     columns: list[str] | None = None,
     categorical_cols: list[str] | None = None,
     keep_source_xy: bool = False,
+    keep_float64: bool = False,
     max_capacity: int = DEFAULT_TILE_CAPACITY,
     max_zoom: int = DEFAULT_NOMINAL_MAX_ZOOM,
     max_tile_rows: int | None = None,
@@ -922,6 +969,7 @@ def build_generic(
             "x_col": x_col,
             "y_col": y_col,
             "keep_source_xy": bool(keep_source_xy),
+            "keep_float64": bool(keep_float64),
             "max_categories": int(max_categories),
             "categorical_cols": sorted(categorical_cols) if categorical_cols else [],
         }
@@ -940,6 +988,11 @@ def build_generic(
             raise ValueError(f"sort_col '{sort_col}' not found in Parquet columns: {all_cols}")
         if id_col is not None and id_col not in col_type_map:
             raise ValueError(f"id_col '{id_col}' not found in Parquet columns: {all_cols}")
+
+        explicit_cat_set = set(categorical_cols or [])
+        missing_cats = [c for c in explicit_cat_set if c not in col_type_map]
+        if missing_cats:
+            raise ValueError(f"categorical_cols not found in Parquet schema: {sorted(missing_cats)}")
 
         explicit_cols_set: set[str] | None = None
         if columns is not None:
@@ -967,6 +1020,22 @@ def build_generic(
             ]
             if sort_col in (x_col, y_col) and sort_col != id_col and sort_col not in payload_cols:
                 payload_cols.append(sort_col)
+
+        pre_dropped_columns: list[str] = []
+        if columns is None:
+            protected_index_cols = {x_col, y_col, id_col, sort_col} | explicit_cat_set
+            filtered_payload: list[str] = []
+            for c in payload_cols:
+                if PANDAS_INDEX_COL_RE.match(c) and c not in protected_index_cols:
+                    pre_dropped_columns.append(c)
+                    print(
+                        f"[ArrowTiles] Dropping pandas index column '{c}'; "
+                        f"pass --columns to retain.",
+                        flush=True,
+                    )
+                else:
+                    filtered_payload.append(c)
+            payload_cols = filtered_payload
 
         for c in payload_cols:
             if c in RESERVED_COLUMN_NAMES or c.startswith("__at_"):
@@ -1016,11 +1085,6 @@ def build_generic(
             f"{q_x} IS NOT NULL AND {q_y} IS NOT NULL "
             f"AND isfinite(CAST({q_x} AS DOUBLE)) AND isfinite(CAST({q_y} AS DOUBLE))"
         )
-
-        explicit_cat_set = set(categorical_cols or [])
-        missing_cats = [c for c in explicit_cat_set if c not in col_type_map]
-        if missing_cats:
-            raise ValueError(f"categorical_cols not found in Parquet schema: {sorted(missing_cats)}")
 
         # Single-pass aggregation over raw_source_sql: counts, id_col uniqueness, bounds, numeric stats, string/explicit-cat distincts
         numeric_payload = [
@@ -1120,18 +1184,47 @@ def build_generic(
         }
 
         stats_dict: dict[str, dict[str, Any]] = {}
+        downcast_float32_cols: set[str] = set()
         for col in numeric_payload:
             rmin, rmax, rnull = agg_row[cursor], agg_row[cursor + 1], agg_row[cursor + 2]
             cursor += 3
+            base_t = ArrowTilesBuilder._base_duckdb_type(col_type_map[col])
+            has_min = rmin is not None and math.isfinite(float(rmin))
+            has_max = rmax is not None and math.isfinite(float(rmax))
+            min_f = float(rmin) if has_min else 0.0
+            max_f = float(rmax) if has_max else 0.0
+
+            can_downcast = (
+                not keep_float64
+                and base_t == "DOUBLE"
+                and not (keep_source_xy and col in (x_col, y_col))
+            )
+            if can_downcast:
+                if (
+                    (not has_min or abs(min_f) <= FLOAT32_SAFE_MAX)
+                    and (not has_max or abs(max_f) <= FLOAT32_SAFE_MAX)
+                ):
+                    downcast_float32_cols.add(col)
+                    if has_min:
+                        min_f = _round_f32(min_f)
+                    if has_max:
+                        max_f = _round_f32(max_f)
+                else:
+                    print(
+                        f"[ArrowTiles] Retaining Float64 for column '{col}' "
+                        f"(range [{min_f:.3g}, {max_f:.3g}] exceeds Float32 bounds).",
+                        flush=True,
+                    )
+
             stats_dict[col] = {
                 "type": "numeric",
-                "min": float(rmin) if rmin is not None and math.isfinite(float(rmin)) else 0.0,
-                "max": float(rmax) if rmax is not None and math.isfinite(float(rmax)) else 0.0,
+                "min": 0.0 if min_f == 0.0 else min_f,
+                "max": 0.0 if max_f == 0.0 else max_f,
                 "null_count": int(rnull or 0),
             }
 
         categorical_columns: dict[str, list[str]] = {}
-        dropped_columns: list[str] = []
+        dropped_columns: list[str] = list(pre_dropped_columns)
         for col in string_payload:
             dist_cnt = int(agg_row[cursor] or 0)
             null_cnt = int(agg_row[cursor + 1] or 0)
@@ -1245,6 +1338,7 @@ def build_generic(
             resume=resume,
             custom_metadata=extra_custom_json,
             categorical_columns=categorical_columns,
+            downcast_float32_cols=downcast_float32_cols,
             bounds=bounds_dict,
             stats=stats_dict,
             view=view_dict,

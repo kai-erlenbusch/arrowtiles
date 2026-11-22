@@ -41,7 +41,7 @@ flowchart TD
     end
 ```
 
-1. **Single-Pass SQL Preflight (`arrowtiles/builder.py`):** DuckDB computes global bounds, row counts, `id_col` uniqueness, numeric `min`/`max` stats, and categorical dictionaries in one scan (automatically dropping high-cardinality free-text columns `distinct > 4,096` unless explicitly requested in `columns`).
+1. **Single-Pass SQL Preflight (`arrowtiles/builder.py`):** DuckDB computes global bounds, row counts, `id_col` uniqueness, numeric `min`/`max` stats, and categorical dictionaries in one scan—automatically omitting unrequested Pandas index columns (`__index_level_<N>__`) and high-cardinality free-text columns (`distinct > 4,096`), and downcasting finite in-range `Float64` (`DOUBLE`) payload columns to `Float32` unless `--keep-float64` is passed.
 2. **Pass 1 — Zero-Atomic 2-Stage Bucketer (`arrowtiles-engine/src/lib.rs`):** DuckDB streams rows ordered by `(priority_key, row_id ASC)`—either an explicit `sort_col` (e.g. `phot_g_mean_mag ASC`) or portable `SplitMix64(row_id, seed)`—into Rust via the Arrow C Data Interface. Stage A computes `fast_hilbert` coordinates across all CPU cores; Stage B assigns zoom levels deterministically without atomic contention and writes per-zoom Parquet partitions (`z_00.parquet .. z_NN.parquet`) plus a cryptographic `manifest.json` (`--resume`).
 3. **Pass 2 — Per-Zoom Packing:** Each zoom partition is sorted in memory by `(tile_id, hilbert_20, priority_ord)`, stripped of redundant per-tile Arrow IPC schema headers (stored once as base64 `arrow_schema` in metadata), Zstd-compressed in parallel via Rayon, and written into a PMTiles v3 archive.
 
@@ -110,11 +110,12 @@ arrowtiles inspect "embeddings.arrowtiles"
 | `--preset gaia` | Astronomical Galactic Hammer projection (`phot_g_mean_mag ASC`, `even_coverage`, `100,000` tile capacity). |
 | `--sampling` | `proportional` (generic default, `25,000` capacity) or `even_coverage` (`G×G` sub-grid occupancy at `Z <= 6`). |
 | `--tile-capacity` | Max rows per non-leaf tile (`25,000` generic default; `100,000` on `--preset gaia`). |
-| `--max-zoom` | Nominal maximum quadtree zoom level before overflow spilling (default: `10`). |
+| `--max-zoom` | Nominal maximum quadtree zoom level before overflow spilling (default: `14`). |
 | `--sort-col`, `--sort-dir` | Explicit priority column (`ASC` or `DESC`); defaults to deterministic `SplitMix64(row_id, seed)`. |
 | `--seed` | Random seed for default `SplitMix64` priority ordering (default: `42`). |
 | `--id-col` | Optional unique unsigned integer row ID column (defaults to dense `0 .. N-1` Parquet offset). |
 | `--keep-source-xy` | Retain raw `Float32`/`Float64` source X/Y columns alongside quantized `x_u16`/`y_u16`. |
+| `--keep-float64` | Retain `Float64` (`DOUBLE`) payload columns instead of downcasting in-range floats to `Float32`. |
 | `--temp-dir`, `--resume` | Persist Pass 1 zoom partitions in `--temp-dir` and reuse verified SHA-256 `manifest.json` on `--resume`. |
 
 ---

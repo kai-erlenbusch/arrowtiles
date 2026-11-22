@@ -58,8 +58,9 @@ tests/                       # Pytest unit, determinism, completeness & spec-gat
 2. **Bit-Identical SHA-256 Reproducibility:**
    - `run_bucketer` (`arrowtiles-engine/src/lib.rs`) uses a zero-atomic 2-stage pipeline: **Stage A** computes stateless `(ix_20, iy_20, h_20)` in parallel via Rayon; **Stage B** claims tile/sub-grid slots sequentially in strict `(priority_key, row_id ASC)` order.
    - JSON metadata is serialized with `sort_keys=True`. Re-running a build (with or without `--resume` against a matching `arrowtiles-partitions-v2` SHA-256 manifest) **must** produce a byte-identical `.arrowtiles` output.
-3. **Out-of-Core & SQL Safety Discipline:**
+3. **Out-of-Core, Column Pruning & SQL Safety Discipline:**
    - Never materialize multi-GB datasets into Python lists or NumPy/Pandas copies; stream Arrow `RecordBatchReader` batches between DuckDB and Rust (`arrow::ffi_stream`).
+   - Generic builds omit unrequested `__index_level_<N>__` columns (`^__index_level_\d+__$`) and high-cardinality strings (`> max_categories`, recorded in `metadata.dropped_columns`), and downcast in-range `DOUBLE` (`Float64`) payload attributes (`|min|, |max| <= 3.4028234e38`) to `Float32` after `Float64` coordinate normalization and `Float64` `sort_col` ordering unless `--keep-float64` (`keep_float64=True`) is requested.
    - Always quote SQL identifiers via `ArrowTilesBuilder._quote_ident` and escape file paths via `_sql_path_expr`. Never enable DuckDB `allow_unsigned_extensions`.
    - Always close DuckDB connections deterministically (`with ArrowTilesBuilder(...)` / `with ArrowTilesReader(...)`) so temporary files can be unlinked cleanly on Windows.
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import math
+import mmap
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,7 +13,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.ipc as ipc
-from pmtiles.reader import MmapSource, Reader, all_tiles, zxy_to_tileid
+from pmtiles.reader import Reader, all_tiles, zxy_to_tileid
 from pmtiles.tile import Compression, TileType
 
 from arrowtiles._zstd import zstd_decompress
@@ -135,12 +136,35 @@ def validate_file(
                 errors=["Invalid magic bytes: not a PMTiles archive"],
             )
 
-        source = MmapSource(fh)
+        try:
+            archive_mmap = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+        except Exception as exc:
+            return ValidationResult(
+                path=str(archive_path),
+                ok=False,
+                is_legacy=False,
+                spec_version=None,
+                tile_count=0,
+                total_rows=0,
+                declared_total_rows=None,
+                dropped_rows=None,
+                actual_max_zoom=0,
+                header_max_zoom=0,
+                observed_max_tile_rows=0,
+                declared_max_tile_rows=None,
+                max_compressed_tile_bytes=0,
+                max_compressed_tile_coord=None,
+                warnings=[],
+                errors=[f"Failed to memory-map archive: {exc}"],
+            )
+
+        source = lambda offset, length: archive_mmap[offset : offset + length]  # noqa: E731
         try:
             reader = Reader(source)
             header = dict(reader.header())
             metadata = reader.metadata()
         except Exception as exc:
+            archive_mmap.close()
             return ValidationResult(
                 path=str(archive_path),
                 ok=False,
@@ -664,6 +688,8 @@ def validate_file(
                             f"Sampled cross-tile row_id uniqueness violated: "
                             f"{distinct_sampled} distinct out of {len(sampled_rids)} sampled row_ids"
                         )
+
+        archive_mmap.close()
 
     return ValidationResult(
         path=str(archive_path),

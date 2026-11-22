@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import mmap
 import os
 import warnings
 from collections.abc import Iterator
@@ -12,7 +13,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.ipc as ipc
-from pmtiles.reader import MmapSource, Reader, all_tiles
+from pmtiles.reader import Reader, all_tiles
 
 from arrowtiles._zstd import zstd_decompress
 
@@ -93,8 +94,11 @@ class ArrowTilesReader:
             raise FileNotFoundError(f"Archive not found: {self.path}")
 
         self._fh = open(self.path, "rb")  # noqa: SIM115
+        self._mmap: mmap.mmap | None = None
         try:
-            self._source = MmapSource(self._fh)
+            mm = mmap.mmap(self._fh.fileno(), 0, access=mmap.ACCESS_READ)
+            self._mmap = mm
+            self._source = lambda offset, length: mm[offset : offset + length]
             self._reader = Reader(self._source)
             self._header = dict(self._reader.header())
             raw_meta = self._reader.metadata()
@@ -109,10 +113,15 @@ class ArrowTilesReader:
             self._schema_bytes = base64.b64decode(b64_schema)
             self._schema = ipc.RecordBatchStreamReader(self._schema_bytes).schema
         except Exception:
+            if self._mmap is not None and not self._mmap.closed:
+                self._mmap.close()
             self._fh.close()
             raise
 
     def close(self) -> None:
+        mm = getattr(self, "_mmap", None)
+        if mm is not None and not mm.closed:
+            mm.close()
         if getattr(self, "_fh", None) is not None and not self._fh.closed:
             self._fh.close()
 

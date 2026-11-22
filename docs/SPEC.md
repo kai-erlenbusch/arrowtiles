@@ -70,7 +70,7 @@ Optional feature negotiation key:
    - Custom SQL query callers (`build(input_query=...)`) **MUST** supply an explicit deterministic `id_col`.
 2. **Completeness, Non-Finite Coordinates & Dropped Columns:** Rows where source `x` or `y` is `NULL`, `NaN`, or `±Infinity` **MUST** be excluded and counted in metadata `"dropped_rows"` ($\ge 0$). Every remaining valid row (`"total_rows"`, $\ge 0$) **MUST** appear in **exactly one** tile:
    $$\sum_{t \in \text{tiles}} \text{num\_rows}(t) = \text{total\_rows}, \qquad \text{total\_rows} + \text{dropped\_rows} = \text{input\_rows}.$$
-   Writers that automatically omit unrequested high-cardinality string columns (`distinct > max_categories`) **MUST** record their names in metadata `"dropped_columns": ["...", ...]` (`[]` when none were dropped).
+   Writers that automatically omit unrequested columns (such as high-cardinality string columns with `distinct > max_categories` or framework index artifact columns matching `__index_level_<N>__`) **MUST** record their names in metadata `"dropped_columns": ["...", ...]` (`[]` when none were dropped).
 
 ---
 
@@ -92,7 +92,7 @@ Metadata **MUST** record `"nominal_max_zoom"` (`u8`), `"tile_capacity"` (`u32`, 
    - Column order: `{"kind": "column", "column": "<name>", "order": "asc" | "desc"}` (`NULL`/`NaN` sorted last, ties broken by `row_id ASC`).
 2. **Statistics (`"stats"`, `"tile_stats"`):**
    - `"stats"`: per-column map computed over **finite non-null** values only (RFC 8259 JSON; `NaN`/`Infinity` forbidden):
-     - Numeric: `{"type": "numeric", "min": <f64>, "max": <f64>, "null_count": <u64>}`
+     - Numeric: `{"type": "numeric", "min": <f64>, "max": <f64>, "null_count": <u64>}` (writers **MAY** downcast in-range `Float64` payload attribute columns to `Float32` unless explicit `Float64` retention is requested, while preserving `Float64` precision for coordinate normalization and priority sorting).
      - Categorical: `{"type": "categorical", "categories": ["...", ...], "null_count": <u64>}` (every non-null integer code $k$ **MUST** satisfy $0 \le k < \text{len}(\text{categories})$, mapping $k \mapsto \text{categories}[k]$).
    - `"tile_stats"`: reserved optional key in metadata JSON (`null` or omitted in `v0.1`; reserved for a compact tile-indexed min/max summary directory so tile payloads stay pure Arrow IPC).
 3. **Optional View Hints (`"view"`):** Optional metadata object (`colorField`, `colorMin`, `colorMax`, `sizeField`, `sizeMin`, `sizeMax`, `colorScale`, `preserveAspect`, `mode`). Readers **MUST NOT** require `"view"`. Viewers rendering categorical columns **MUST** treat `NULL`/`NaN` values as missing (never category `0`) and **SHOULD** provide at least a 64-color palette with deterministic wrap/hue-hashing above 64 categories.
