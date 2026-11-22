@@ -5,7 +5,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../..');
 const workspaceParent = path.resolve(repoRoot, '..');
-const viewerRoot = process.env.DEEPGRAPH_VIEWER_ROOT || path.join(workspaceParent, 'deepgraph-arrowtiles-sandbox');
+const preferredViewerRoot = path.join(workspaceParent, 'deepgraph');
+const viewerRoot =
+  process.env.DEEPGRAPH_VIEWER_ROOT ||
+  (fs.existsSync(preferredViewerRoot)
+    ? preferredViewerRoot
+    : path.join(workspaceParent, 'deepgraph-arrowtiles-sandbox'));
 const benchDir = __dirname;
 const samplesDir = path.join(repoRoot, 'samples');
 const dataDir = path.join(samplesDir, '_tmp_phase4_parquet_bench');

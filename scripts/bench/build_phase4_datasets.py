@@ -27,10 +27,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_PARENT = REPO_ROOT.parent
 SAMPLES_DIR = REPO_ROOT / "samples"
 BENCH_DATA_DIR = SAMPLES_DIR / "_tmp_phase4_parquet_bench"
+_DEFAULT_VIEWER_DIR = (
+    WORKSPACE_PARENT / "deepgraph"
+    if (WORKSPACE_PARENT / "deepgraph").is_dir()
+    else WORKSPACE_PARENT / "deepgraph-arrowtiles-sandbox"
+)
 S3_CACHE_DIR = Path(
     os.environ.get(
         "ARROWTILES_GAIA_S3_CACHE",
-        str(WORKSPACE_PARENT / "deepgraph-arrowtiles-sandbox" / "s3_cache"),
+        str(_DEFAULT_VIEWER_DIR / "s3_cache"),
     )
 )
 LMSYS_FULL_PQ = Path(

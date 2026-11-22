@@ -5,16 +5,22 @@ build-backend = "maturin"
 [project]
 name = "arrowtiles"
 version = "0.1.0"
-description = "DuckDB + Rust (PyO3) ArrowTiles v0.1 builder, reader, and validator"
+description = "DuckDB + Rust (PyO3) ArrowTiles v0.1 spatial pyramid builder, reader, and validator"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
+keywords = ["arrowtiles", "pmtiles", "apache-arrow", "duckdb", "webgpu", "quadtree", "visualization"]
 dependencies = [
     "duckdb>=1.0.0",
     "pmtiles>=3.4.0",
     "pyarrow>=16.0.0",
     "tqdm>=4.66.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/kai-erlenbusch/arrowtiles"
+Repository = "https://github.com/kai-erlenbusch/arrowtiles.git"
+Issues = "https://github.com/kai-erlenbusch/arrowtiles/issues"
 
 [project.scripts]
 arrowtiles = "arrowtiles.__main__:main"

@@ -1,10 +1,13 @@
-# ArrowTiles Pipeline (DuckDB + Rust IPC)
+# ArrowTiles (`arrowtiles`)
 
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![DuckDB](https://img.shields.io/badge/DuckDB-v1.0.0+-orange.svg)](https://duckdb.org)
 [![Rust](https://img.shields.io/badge/Rust-1.80+-blue.svg)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/Python-3.10+-yellow.svg)](https://www.python.org/)
 
-ArrowTiles is a high-performance data engineering pipeline designed to process massive, out-of-core spatial datasets (like the 1.8 billion row ESA Gaia dataset) and pack them into strictly ordered, Apache Arrow IPC-encoded `.arrowtiles` (PMTiles) archives.
+**ArrowTiles** (`pip install arrowtiles`) is a high-performance DuckDB + Rust (`PyO3`) spatial pyramid builder, reader, and validator that packs multi-million to billion-row datasets (such as the 1.8 billion row ESA Gaia DR3 catalogue or 2.84 million LMSys embeddings) into single-file, HTTP Range-streamable **`.arrowtiles` (`v0.1`)** archives (see [`docs/SPEC.md`](docs/SPEC.md)).
+
+For client-side WebGPU rendering, GPU picking, and interactive exploration of `.arrowtiles` archives in the browser, see the companion **[deepgraph](https://github.com/kai-erlenbusch/deepgraph)** engine (`npm install deepgraph`).
 
 Because statically compiling a DuckDB extension via Rust on Windows can cause MSVC standard library conflicts, this pipeline uses a **Native Python Extension (PyO3)** architecture. Python orchestrates DuckDB's out-of-core sorting engine, while the `arrowtiles_core` Rust module is directly imported into Python to handle CPU-intensive spatial math and parallel Zstandard compression with zero-overhead FFI bindings.
 
@@ -130,9 +133,9 @@ These stats are serialized into a custom JSON metadata block and injected direct
 
 While the core pipeline successfully processes billion-row datasets, there are several major architectural leaps planned to transform ArrowTiles from a sandbox tool into a world-class spatial ecosystem.
 
-### Phase 1: Pipeline & Frontend Optimization
-- **Z-Level Partitioning (Zero-Wait Packing):** Currently, Pass 2 requires a 20-minute out-of-core spatial sort by DuckDB. We plan to upgrade Pass 1 to partition data into separate Parquet files based on Zoom level (`z_0.parquet`, `z_1.parquet`). This perfectly pre-sorts the Z-axis, turning Pass 2 into a series of lightning-fast, purely in-memory sorts and eliminating the disk-thrashing gap.
-- **Multi-Tile Streaming (Layering):** Packing 10 dimensions of scientific data (Velocity, Chemistry, Dust) into a single file makes the `.arrowtiles` archive extremely heavy. We will upgrade the pipeline to generate a lightweight "Core Layer" (XYZ coordinates only) alongside independent "Auxiliary Layers". The frontend WebWorker will fetch active layers concurrently and merge them just-in-time before GPU upload, drastically reducing bandwidth and allowing users to dynamically toggle datasets.
+### Phase 1: Pipeline & Format Extensions
+- **✅ Completed (Z-Level Partitioning & Deterministic 2-Stage Bucketer):** Pass 1 partitions data directly into per-zoom Parquet files (`z_00.parquet .. z_NN.parquet`) with SHA-256 `--resume` manifests and zero-atomic deterministic `(priority_key, row_id ASC)` assignment.
+- **Column Groups & Multi-Layer Streaming (`v0.2+`):** Partitioning wide scientific tables into a core geometry group plus on-demand attribute column groups inside a single `.arrowtiles` archive via `required_features`.
 
 ### Phase 2: Open-Source Ecosystem Wrappers
 To make the pipeline accessible to the broader data science and web development communities, we plan to wrap the unified Rust engine using industry-standard FFI bindings:

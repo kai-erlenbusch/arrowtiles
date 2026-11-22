@@ -68,11 +68,18 @@ def _resolve_optional_file(env_var: str, default_rel: Path, description: str) ->
     return candidate
 
 
+def _sibling_viewer_dir() -> Path:
+    preferred = WORKSPACE_PARENT / "deepgraph"
+    if preferred.is_dir():
+        return preferred
+    return WORKSPACE_PARENT / "deepgraph-arrowtiles-sandbox"
+
+
 @pytest.fixture
 def lmsys_arrowtiles_path() -> Path:
     return _resolve_optional_file(
         "ARROWTILES_LMSYS_ARCHIVE",
-        Path("deepgraph-arrowtiles-sandbox") / "public" / "lmsys_full.arrowtiles",
+        _sibling_viewer_dir().relative_to(WORKSPACE_PARENT) / "public" / "lmsys_full.arrowtiles",
         "LMSys archive",
     )
 
@@ -81,7 +88,7 @@ def lmsys_arrowtiles_path() -> Path:
 def gaia_arrowtiles_path() -> Path:
     return _resolve_optional_file(
         "ARROWTILES_GAIA_ARCHIVE",
-        Path("deepgraph-arrowtiles-sandbox") / "public" / "gaia_full.arrowtiles",
+        _sibling_viewer_dir().relative_to(WORKSPACE_PARENT) / "public" / "gaia_full.arrowtiles",
         "Gaia archive",
     )
 
@@ -108,7 +115,7 @@ def full_lmsys_parquet_path() -> Path:
 def gaia_batch0_parquet_path() -> Path:
     return _resolve_optional_file(
         "ARROWTILES_GAIA_BATCH0_PARQUET",
-        Path("deepgraph-arrowtiles-sandbox") / "s3_cache" / "batch_000.parquet",
+        _sibling_viewer_dir().relative_to(WORKSPACE_PARENT) / "s3_cache" / "batch_000.parquet",
         "Gaia s3_cache batch_000.parquet",
     )
 

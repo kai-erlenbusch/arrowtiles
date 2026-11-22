@@ -27,7 +27,12 @@ def _find_gaia_sources() -> list[Path]:
     if override:
         p = Path(override)
         return [p] if p.is_file() else []
-    s3_dir = WORKSPACE_PARENT / "deepgraph-arrowtiles-sandbox" / "s3_cache"
+    preferred_s3_dir = WORKSPACE_PARENT / "deepgraph" / "s3_cache"
+    s3_dir = (
+        preferred_s3_dir
+        if preferred_s3_dir.is_dir()
+        else WORKSPACE_PARENT / "deepgraph-arrowtiles-sandbox" / "s3_cache"
+    )
     if s3_dir.is_dir():
         batches = sorted(s3_dir.glob("batch_*.parquet"))
         if batches:

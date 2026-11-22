@@ -721,3 +721,12 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
   - **Automated Suites:**
     - Writer `pytest`: **`53 passed, 1 skipped in 22.70s`**.
     - Viewer `typecheck` + `build:lib` + `verify:types` + `build:demo` + `3` Playwright specs (`library-embed`, `phase8b-hdr-density`, `picking-layer`): **all PASS** (`liveDevices = 0`, `liveBytes = 0`).
+
+
+## 2026-11-21 — `D12a` Locked (`arrowtiles` + `deepgraph` / `pydeepgraph`) (`Held at ⛔ D12c`)
+
+- **Done:**
+  1. **Locked `D12a` Final Package & Repository Names (`logs/2026-11-21_08_ADR_all_d12a-package-and-repo-naming.md`):**
+     - **Writer (`arrowtiles`):** PyPI `arrowtiles` + target GitHub URL `https://github.com/kai-erlenbusch/arrowtiles` in `pyproject.toml`, `Cargo.toml`, and `README.md`.
+     - **Viewer (`deepgraph` `5786195`):** npm `"name": "deepgraph"` (`"private": true` held pending `⛔ D12c`) + target GitHub URL `https://github.com/kai-erlenbusch/deepgraph` across `package.json`, `package-lock.json`, `scripts/verify_consumer_dts.mjs`, `docs/API.md`, `index.html`, and refreshed `README.md` (with `pydeepgraph` noted for future Python/Jupyter widgets).
+     - **Dual Sibling-Folder Resolution:** Updated `vite.config.ts`, `tests/phase8b-hdr-density.spec.ts`, `tests/conftest.py`, `scripts/build_samples.py`, and `scripts/bench/*` to check `arrowtiles` / `deepgraph` first and fall back to `duckdb-arrowtiles` / `deepgraph-arrowtiles-sandbox` seamlessly.
