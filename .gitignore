@@ -36,7 +36,6 @@ logs/*
 !logs/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]_*.md
 *.log
 *.txt
-!requirements.txt
 
 # Ide and OS
 .vscode/

@@ -17,6 +17,11 @@ dependencies = [
     "tqdm>=4.66.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
 [project.urls]
 Homepage = "https://github.com/kai-erlenbusch/arrowtiles"
 Repository = "https://github.com/kai-erlenbusch/arrowtiles.git"
