@@ -694,3 +694,30 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
 - **Remaining Open Owner Gates (`⛔ D12a` / `D12c`):**
   1. **`⛔ D12a` (Final Package Names):** Final npm package name (currently `"deepgraph-arrowtiles-sandbox"`, `"private": true`) and PyPI package name (`"arrowtiles"`).
   2. **`⛔ D12c` (Remote Push & Registry Publish):** Pushing `revival/2026-11-wip` to GitHub and publishing to npm / PyPI remain gated on explicit owner instruction.
+
+
+## 2026-11-21 — Post-Review Visual Restoration (`9491f7e` `R16 / G16 / B16` Optical RGB + `zoom > 36` Rescue), Pre-Publish `SPEC.md` `0.x` / `required_features` Gates & MuniLM `logs/` Backfill (`Held at ⛔ D12a / D12c`)
+
+- **Done:**
+  1. **Restored Exact Pre-8b (`9491f7e`) Mode 0/3 `R16 / G16 / B16` Optical RGB Pipeline + `zoom > 36` Deep-Zoom Rescue (`deepgraph-arrowtiles-sandbox` `a2e4da1`):**
+     - Restored `9491f7e`'s verbatim `eval_color` optical RGB ramp stops, `three_aces_filmic`, `linear_to_srgb`, `splat_optical_pixel` (`word0 = R16 | (G16 << 16)`, `word1 = B16`, scale `1024.0`), Mode 3 star trails, and `fs_main` `min(ch, 1024u) / 1024.0` + `clamp(bg + rgb, 0, 1)` resolve in `src/core/ComputeRasterizer.ts` (preserving additive blue OB + golden red-clump mixing and incandescent white-gold bulge blooming while keeping `0.0000%` stationary shimmer).
+     - Anchored `zoom <= 36` (`logZoom <= 5.20`, including `Z=2` `zoom=1.8`, `Z=3` `zoom=2.17` at `exposure = 1.0`, and `LMC Z=7` `zoom=36` at `exposure = 0.35`) bit-for-bit to `9491f7e`, and applied smooth continuous star-size growth past `zoom = 64` + gentle deep-zoom exposure/bright-star rescue strictly above `logZoom > 5.20` (`M31` `zoom=48`, `LMC Z=8` `zoom=114`, `M33` `zoom=180`, `LMC Z=10` `zoom=358`).
+     - Kept the 4 clean public `ViewOptions` (`pointSize`, `zoomBalance`, `pointOpacity`, `exposure`) across `types.ts`, `ViewState.ts`, `ControlsPanel.ts`, and `docs/API.md` (`dist/index.js` = `187.22 kB` / **`46.62 kB` gzip**; `dist/standalone.js` = `435.82 kB` / **`99.97 kB` gzip**).
+  2. **Pre-Publish `SPEC.md` `v0.1` `0.x` Minor-Version & `required_features` Gates (`duckdb-arrowtiles` + `deepgraph-arrowtiles-sandbox`):**
+     - Updated `docs/SPEC.md` (§1 & §6.4), `arrowtiles/builder.py` (`RESERVED_METADATA_KEYS`), `arrowtiles/reader.py`, `arrowtiles/validator.py`, `tests/test_spec_tiling.py`, and `src/lib/DatasetSession.ts` + `tests/phase8b-hdr-density.spec.ts` so `0.x` readers/validators reject `minor > 1` (`"0.2"` rejected) and reject malformed or unrecognized `"required_features": string[]` entries while accepting `[]` / omitted.
+  3. **MuniLM `logs/` Backfill (`duckdb-arrowtiles/logs/`):**
+     - Persisted `2026-11-21_05_WALKTHROUGH_viewer_phase-8b-visual-comparison-and-tuning.md` (with local comparison PNGs copied to `logs/assets/2026-11-21_05_*.png`), `2026-11-21_06_RESEARCH_all_2-5d-and-octree-tiling.md`, and `2026-11-21_07_RESEARCH_all_post-v0-1-format-improvements.md`, and indexed all three in `logs/README.md`.
+
+- **Evidence (`Intel xe-lpg iGPU`, `0 B` on RTX 5090):**
+  - **`Z <= 7` Bit-Exact Colour Match vs. `9491f7e` (`gaia_full.arrowtiles`):**
+    - `Z=2` (`zoom = 1.8`): `mean |ΔRGB| = 0.0000` (`maxAbsDiff = 0`, `ROI = 115.78`, `Chroma = 73.01`).
+    - `Z=3` (`zoom = 2.17`): `mean |ΔRGB| = 0.0000` (`maxAbsDiff = 0`, `ROI = 213.35`, `Chroma = 109.96`, `0 / 962,054` shimmer).
+    - `LMC Z=7` (`zoom = 36`): `mean |ΔRGB| = 0.0166` (`maxAbsDiff = 1`, `ROI = 120.18 vs 120.17`, `Contrast = 14.54×`, `Chroma = 67.75 vs 67.74`).
+  - **`zoom > 36` Deep-Zoom Rescue (`gaia_full.arrowtiles`):**
+    - `LMC Z=8` (`zoom = 114`): `ROI = 60.34 -> 165.70`, `p99 = 104.8 -> 255.0`, `Contrast = 3.43× -> 3.49×`.
+    - `LMC Z=10` (`zoom = 358`): `ROI = 24.05 -> 98.50`, `p99 = 49.4 -> 253.0`, `Contrast = 1.89× -> 1.95×`, `0 / 899,827` (`0.0000%`) shimmer.
+    - `Andromeda M31` (`zoom = 48`): `ROI = 24.15 -> 34.64`, `p99 = 60.0 -> 109.3` (`+82.2%`).
+    - `Triangulum M33` (`Z=9`, `zoom = 180`): `ROI = 17.47 -> 21.63`, `p99 = 45.7 -> 138.6` (`+203.3%`), `Contrast = 0.47× -> 1.63×`, `Dark = 93.04%`.
+  - **Automated Suites:**
+    - Writer `pytest`: **`53 passed, 1 skipped in 22.70s`**.
+    - Viewer `typecheck` + `build:lib` + `verify:types` + `build:demo` + `3` Playwright specs (`library-embed`, `phase8b-hdr-density`, `picking-layer`): **all PASS** (`liveDevices = 0`, `liveBytes = 0`).

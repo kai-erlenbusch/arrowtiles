@@ -17,10 +17,15 @@ from pmtiles.reader import MmapSource, Reader, all_tiles
 from arrowtiles._zstd import zstd_decompress
 
 
-def check_spec_version(metadata: dict[str, Any], path_label: str = "<archive>") -> tuple[bool, str | None]:
-    """Validate format/version metadata per SPEC.md §1.
+MAX_SUPPORTED_V0_MINOR = 1
+SUPPORTED_REQUIRED_FEATURES: frozenset[str] = frozenset()
 
-    Returns `(is_legacy, version_str)`. Raises `ValueError` on unknown format or major version.
+
+def check_spec_version(metadata: dict[str, Any], path_label: str = "<archive>") -> tuple[bool, str | None]:
+    """Validate format, version, tiling, and required_features metadata per SPEC.md §1.
+
+    Returns `(is_legacy, version_str)`. Raises `ValueError` on unknown format, unsupported
+    major/0.x-minor version, unsupported tiling, or unrecognized required_features.
     """
     fmt = metadata.get("format")
     ver = metadata.get("version")
@@ -38,18 +43,24 @@ def check_spec_version(metadata: dict[str, Any], path_label: str = "<archive>") 
             f"Unsupported archive format {fmt!r} in '{path_label}' (expected 'arrowtiles')"
         )
 
-    if not isinstance(ver, str) or "." not in ver:
-        raise ValueError(f"Invalid ArrowTiles version {ver!r} in '{path_label}'")
+    if not isinstance(ver, str):
+        raise ValueError(f"Invalid ArrowTiles version {ver!r} in '{path_label}' (expected '<major>.<minor>')")
 
-    major_str = ver.split(".", 1)[0]
-    try:
-        major = int(major_str)
-    except ValueError as exc:
-        raise ValueError(f"Invalid ArrowTiles major version in {ver!r}") from exc
+    parts = ver.split(".")
+    if len(parts) != 2 or not parts[0].isascii() or not parts[1].isascii() or not parts[0].isdigit() or not parts[1].isdigit():
+        raise ValueError(f"Invalid ArrowTiles version {ver!r} in '{path_label}' (expected '<major>.<minor>')")
+
+    major = int(parts[0])
+    minor = int(parts[1])
 
     if major != 0:
         raise ValueError(
-            f"Unsupported ArrowTiles major version {ver!r} in '{path_label}' (reader supports 0.x)"
+            f"Unsupported ArrowTiles major version {ver!r} in '{path_label}' (reader supports 0.x up to '0.{MAX_SUPPORTED_V0_MINOR}')"
+        )
+
+    if minor > MAX_SUPPORTED_V0_MINOR:
+        raise ValueError(
+            f"Unsupported ArrowTiles minor version {ver!r} in '{path_label}' (reader supports up to '0.{MAX_SUPPORTED_V0_MINOR}')"
         )
 
     tiling = metadata.get("tiling")
@@ -57,6 +68,18 @@ def check_spec_version(metadata: dict[str, Any], path_label: str = "<archive>") 
         raise ValueError(
             f"Unsupported ArrowTiles tiling {tiling!r} in '{path_label}' (reader supports 'quadtree-2d')"
         )
+
+    req_features = metadata.get("required_features")
+    if req_features is not None:
+        if not isinstance(req_features, list) or not all(isinstance(f, str) for f in req_features):
+            raise ValueError(
+                f"Invalid ArrowTiles required_features {req_features!r} in '{path_label}' (expected list of strings)"
+            )
+        unknown = [f for f in req_features if f not in SUPPORTED_REQUIRED_FEATURES]
+        if unknown:
+            raise ValueError(
+                f"Unsupported ArrowTiles required_features {unknown!r} in '{path_label}' (v0.1 reader supports none)"
+            )
 
     return False, ver
 

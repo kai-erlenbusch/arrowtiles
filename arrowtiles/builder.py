@@ -64,6 +64,7 @@ RESERVED_METADATA_KEYS = frozenset(
         "format",
         "version",
         "tiling",
+        "required_features",
         "arrow_schema",
         "bounds",
         "priority",

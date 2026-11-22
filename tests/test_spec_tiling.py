@@ -126,3 +126,74 @@ def test_spec_tiling_quadtree_2d_emitted_reserved_and_enforced(tmp_path: Path) -
 
     with pytest.raises(ValueError, match="octree-3d"):
         ArrowTilesReader(octree_path)
+
+
+def test_spec_0x_minor_version_and_required_features_gates(tmp_path: Path) -> None:
+    pq_path = tmp_path / "pts.parquet"
+    out_path = tmp_path / "pts.arrowtiles"
+    _make_tiny_parquet(pq_path)
+
+    # 1. Reserved key collision on `required_features` in custom_config must fail fast
+    with pytest.raises(ValueError, match="required_features"):
+        build_generic(
+            input_parquet=pq_path,
+            output_path=out_path,
+            x_col="x",
+            y_col="y",
+            custom_config='{"required_features": []}',
+            show_progress=False,
+        )
+
+    build_generic(
+        input_parquet=pq_path,
+        output_path=out_path,
+        x_col="x",
+        y_col="y",
+        show_progress=False,
+    )
+
+    # 2. Future 0.x minor version `"0.2"` (while major == 0) must be rejected by both validator and reader
+    v02_path = tmp_path / "pts_v02.arrowtiles"
+    _rewrite_metadata(out_path, v02_path, lambda m: m.__setitem__("version", "0.2"))
+    res_v02 = validate_file(v02_path)
+    assert not res_v02.ok
+    assert any("minor version" in e and "0.2" in e for e in res_v02.errors)
+    with pytest.raises(ValueError, match=r"minor version.*0\.2"):
+        ArrowTilesReader(v02_path)
+
+    # 3. Malformed version strings (`"0.1.1"`, `"0.x"`) must be rejected
+    bad_ver_path = tmp_path / "pts_bad_ver.arrowtiles"
+    _rewrite_metadata(out_path, bad_ver_path, lambda m: m.__setitem__("version", "0.1.1"))
+    res_bad_ver = validate_file(bad_ver_path)
+    assert not res_bad_ver.ok
+    with pytest.raises(ValueError, match="Invalid ArrowTiles version"):
+        ArrowTilesReader(bad_ver_path)
+
+    # 4. Empty `required_features: []` is accepted cleanly in v0.1
+    empty_feat_path = tmp_path / "pts_empty_feat.arrowtiles"
+    _rewrite_metadata(out_path, empty_feat_path, lambda m: m.__setitem__("required_features", []))
+    res_empty_feat = validate_file(empty_feat_path)
+    assert res_empty_feat.ok, res_empty_feat.errors
+    with ArrowTilesReader(empty_feat_path) as rdr_empty:
+        assert rdr_empty.metadata().get("required_features") == []
+
+    # 5. Unrecognized `required_features: ["column-groups-v1"]` is rejected by both validator and reader
+    unk_feat_path = tmp_path / "pts_unk_feat.arrowtiles"
+    _rewrite_metadata(
+        out_path, unk_feat_path, lambda m: m.__setitem__("required_features", ["column-groups-v1"])
+    )
+    res_unk = validate_file(unk_feat_path)
+    assert not res_unk.ok
+    assert any("required_features" in e and "column-groups-v1" in e for e in res_unk.errors)
+    with pytest.raises(ValueError, match="column-groups-v1"):
+        ArrowTilesReader(unk_feat_path)
+
+    # 6. Non-list `required_features` (e.g. string or object) is rejected
+    malformed_feat_path = tmp_path / "pts_malformed_feat.arrowtiles"
+    _rewrite_metadata(
+        out_path, malformed_feat_path, lambda m: m.__setitem__("required_features", "column-groups-v1")
+    )
+    res_malformed = validate_file(malformed_feat_path)
+    assert not res_malformed.ok
+    with pytest.raises(ValueError, match="expected list of strings"):
+        ArrowTilesReader(malformed_feat_path)

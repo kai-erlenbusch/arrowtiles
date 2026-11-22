@@ -196,18 +196,30 @@ def validate_file(
         else:
             if fmt != "arrowtiles":
                 errors.append(f"Invalid metadata.format {fmt!r} (expected 'arrowtiles')")
-            if not isinstance(ver, str) or "." not in ver:
+            if not isinstance(ver, str):
                 errors.append(f"Invalid metadata.version {ver!r} (expected '<major>.<minor>')")
             else:
-                spec_version = ver
-                try:
-                    major = int(ver.split(".", 1)[0])
+                parts = ver.split(".")
+                if (
+                    len(parts) != 2
+                    or not parts[0].isascii()
+                    or not parts[1].isascii()
+                    or not parts[0].isdigit()
+                    or not parts[1].isdigit()
+                ):
+                    errors.append(f"Invalid metadata.version {ver!r} (expected '<major>.<minor>')")
+                else:
+                    spec_version = ver
+                    major = int(parts[0])
+                    minor = int(parts[1])
                     if major != 0:
                         errors.append(
-                            f"Unsupported ArrowTiles major version {ver!r} (validator supports 0.x)"
+                            f"Unsupported ArrowTiles major version {ver!r} (validator supports 0.x up to '0.1')"
                         )
-                except ValueError:
-                    errors.append(f"Non-integer major version in {ver!r}")
+                    elif minor > 1:
+                        errors.append(
+                            f"Unsupported ArrowTiles minor version {ver!r} (validator supports up to '0.1')"
+                        )
 
         declared_total_rows: int | None = None
         dropped_rows: int | None = None
@@ -223,6 +235,19 @@ def validate_file(
                 errors.append(
                     f"Unsupported metadata.tiling {tiling_val!r} (v0.1 validator supports 'quadtree-2d')"
                 )
+
+            req_features = metadata.get("required_features")
+            if req_features is not None:
+                if not isinstance(req_features, list) or not all(
+                    isinstance(f, str) for f in req_features
+                ):
+                    errors.append(
+                        f"Invalid metadata.required_features {req_features!r} (expected list of strings)"
+                    )
+                elif len(req_features) > 0:
+                    errors.append(
+                        f"Unsupported metadata.required_features {req_features!r} (v0.1 validator supports none)"
+                    )
 
             for req_key in REQUIRED_V01_METADATA_KEYS:
                 if req_key not in metadata:
