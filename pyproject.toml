@@ -34,3 +34,8 @@ arrowtiles = "arrowtiles.__main__:main"
 manifest-path = "arrowtiles-engine/Cargo.toml"
 python-packages = ["arrowtiles"]
 module-name = "arrowtiles._core"
+include = [
+    { path = "LICENSE", format = "sdist" },
+    { path = "NOTICE", format = "sdist" },
+    { path = "docs/SPEC.md", format = "sdist" },
+]

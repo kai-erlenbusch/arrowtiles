@@ -744,3 +744,15 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
 - **Evidence:**
   - `arrowtiles` pytest: **`53 passed in 24.55s`** (`0 skipped`); `README.md` Python API `python -c` smoke test: **`README_PYTHON_API_SMOKE_OK`**.
   - `deepgraph` `typecheck` + `build:lib` + `verify:types` + `build:demo` + `npm run test:e2e` (`Intel xe-lpg iGPU`): **`3 passed in 1.1m`** (`liveDevices = 0`, `liveBytes = 0`).
+
+
+## 2026-11-22 — Path/Link Normalization & Local `D12c` Release Prep (`npm pack --dry-run`, `maturin` `abi3` Wheel/SDist Dry-Run, `release.yml`, `main` Fast-Forward)
+
+- **Done:**
+  1. **Path & Link Normalization (`e7fd666` in `deepgraph`, `ac55f0a` in `arrowtiles`):**
+     - Converted all `file:///...` Markdown links in `docs/PROGRESS_2026-11.md` and `logs/2026-11-*.md` to repo-relative links (or `https://github.com/kai-erlenbusch/{deepgraph,arrowtiles}/blob/main/...` cross-repo links) for tracked files, converted deleted/gitignored links to inline code labels, and normalized local filesystem paths to `<workspace>/...` and `<artifacts>/...` (`0` remaining local path hits across both repos).
+  2. **Packaging Dry-Runs & Multi-Platform PyPI Workflow (`.github/workflows/release.yml`):**
+     - `deepgraph`: Verified `npm pack --dry-run` (`deepgraph-0.1.0.tgz`, `320.5 kB` packed / `1.2 MB` unpacked, `10` files strictly matching `dist/*`, `docs/API.md`, `README.md`, `LICENSE`, `NOTICE`, `package.json`; `"private": true` preserved for Stage 2a GitHub push).
+     - `arrowtiles`: Verified `maturin build --release --sdist` (`arrowtiles-0.1.0-cp39-abi3-win_amd64.whl` + `arrowtiles-0.1.0.tar.gz` including `LICENSE`, `NOTICE`, and `docs/SPEC.md`), fixed `maturin develop --release` CLI invocation in `.github/workflows/ci.yml`, added `homepage`/`repository` to `arrowtiles-engine/Cargo.toml`, and added `.github/workflows/release.yml` (`PyO3/maturin-action@v1` building universal `cp39-abi3` wheels across Linux `x86_64`/`aarch64`, macOS `arm64`/`x86_64`, Windows `x64` + `sdist`, publishing via PyPI Trusted Publishing on `v*` tags).
+  3. **Fast-Forwarded Local `main` (`git merge --ff-only revival/2026-11-wip`):**
+     - Fast-forwarded local `main` in both `deepgraph` and `arrowtiles` ready for Stage 2a (GitHub repo renames + `origin` URL update + `git push origin main`).

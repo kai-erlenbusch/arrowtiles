@@ -69,7 +69,8 @@ tests/                       # Pytest unit, determinism, completeness & spec-gat
 
 ```powershell
 # Recompile the Rust PyO3 extension (`arrowtiles._core`) in release mode after editing `arrowtiles-engine/`:
-.\.venv\Scripts\python.exe -m maturin develop --release
+$env:VIRTUAL_ENV = (Resolve-Path .\.venv).Path
+maturin develop --release
 
 # Install editable Python package + dev dependencies (`pytest`):
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]" --no-build-isolation
