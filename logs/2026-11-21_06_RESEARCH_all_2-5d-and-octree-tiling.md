@@ -18,8 +18,8 @@ conversation_id: fe52eab7-65ce-45dd-8140-b03acd621444
 ## 1. Executive Verdict
 
 1. **You pushed much harder on both 2.5D and Octrees in June 2026 than a casual sketch:**
-   - **2.5D was built, working, and shipped** in [deepgraph-webgpu](file:///d:/exploratory/duckdb-extension/deepgraph-webgpu/README.md) (`kai-erlenbusch/deepgraph`), using flat 2D quadtree Arrow tiles + GPU `layerSpacingUniform` Z-extrusion + tilted orbital perspective + tall-prism (`Box3`) frustum culling.
-   - **Octrees were deeply researched across four artifacts** — the June 5–6 architecture sessions ([conversation_history_2026-06-05.md](file:///d:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox/logs/old/conversation_history_2026-06-05.md)), a dedicated [3d-implementation-plan.md](file:///d:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox/logs/old/3d-implementation-plan.md), a C++20 library audit of `attcs/OrthoTree` ([octree-review.md](file:///d:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox/logs/old/octree-review.md) / `Octree_Study/`), and the [Entwine EPT C++ review](file:///d:/exploratory/duckdb-extension/duckdb-arrowtiles/logs/old/2026-06-29_entwine_arrowtiles_architecture_review.md) — before you wisely pivoted to solving the single-file `.arrowtiles` container and zero-atomic Rust bucketer in 2D first.
+   - **2.5D was built, working, and shipped** in `deepgraph-webgpu` (`kai-erlenbusch/deepgraph`), using flat 2D quadtree Arrow tiles + GPU `layerSpacingUniform` Z-extrusion + tilted orbital perspective + tall-prism (`Box3`) frustum culling.
+   - **Octrees were deeply researched across four artifacts** — the June 5–6 architecture sessions (`conversation_history_2026-06-05.md`), a dedicated `3d-implementation-plan.md`, a C++20 library audit of `attcs/OrthoTree` (`octree-review.md` / `Octree_Study/`), and the `Entwine EPT C++ review` — before you wisely pivoted to solving the single-file `.arrowtiles` container and zero-atomic Rust bucketer in 2D first.
 2. **Both tracks remain high-leverage, in a clear two-step sequence after `v0.1`:**
    - **Stage 1 (`v0.2` — 2.5D Pitch/Bearing Extrusion):** Delivers ~85% of interactive 3D value at ~15% of the engineering cost, with **zero changes to the `.arrowtiles` `v0.1` file format**. Any existing numeric column (`phot_g_mean_mag`, `parallax`, `num_of_tokens`, elevation, fare, timestamp) can lift points in real time on our new native WebGPU `ComputeRasterizer`.
    - **Stage 2 (`v0.3` — `tiling: "octree-3d"` ArrowTiles-3D):** Genuine greenfield ecosystem opportunity — **"COPC for any Apache Arrow table."** Neither COPC/EPT (locked to fixed LiDAR schemas) nor OGC 3D Tiles 1.1 (glTF/mesh-centric with multi-file or complex subtree bitstreams) provides a single-file, HTTP-Range-native, schema-arbitrary Arrow octree with deterministic multiscale priority sampling.
@@ -38,38 +38,38 @@ flowchart LR
 
 ### 2.1 Audit of the Working June 2026 `deepgraph-webgpu` 2.5D Engine
 
-We audited all four source files in `d:\exploratory\duckdb-extension\deepgraph-webgpu\src`:
-- [main.ts](file:///d:/exploratory/duckdb-extension/deepgraph-webgpu/src/main.ts) (`591` lines — Three.js TSL `InstancedBufferGeometry` + `layerSpacingUniform`)
-- [Renderer.ts](file:///d:/exploratory/duckdb-extension/deepgraph-webgpu/src/core/Renderer.ts) (`133` lines — `PerspectiveCamera(45°)` + `OrbitControls` + `set2DMode`)
-- [TileManager.ts](file:///d:/exploratory/duckdb-extension/deepgraph-webgpu/src/data/TileManager.ts) (`283` lines — `Box3` frustum traversal + distance LOD)
-- [ArrowWorker.ts](file:///d:/exploratory/duckdb-extension/deepgraph-webgpu/src/data/ArrowWorker.ts) (`117` lines — `.geom.arrow` + `.semantic.arrow` two-stage worker)
+We audited all four source files in `<workspace>/deepgraph-webgpu/src`:
+- `main.ts` (`591` lines — Three.js TSL `InstancedBufferGeometry` + `layerSpacingUniform`)
+- `Renderer.ts` (`133` lines — `PerspectiveCamera(45°)` + `OrbitControls` + `set2DMode`)
+- `TileManager.ts` (`283` lines — `Box3` frustum traversal + distance LOD)
+- `ArrowWorker.ts` (`117` lines — `.geom.arrow` + `.semantic.arrow` two-stage worker)
 
 #### What Worked Well (Keep the Design Concepts)
-1. **Zero-Cost 2D ↔ 2.5D Extrusion Multiplier ([main.ts:89-90, 203-204](file:///d:/exploratory/duckdb-extension/deepgraph-webgpu/src/main.ts#L203-L204)):**
+1. **Zero-Cost 2D ↔ 2.5D Extrusion Multiplier (`main.ts:89-90, 203-204`):**
    `finalZ = offset3DAttr.z * layerSpacingUniform` (`0.0` flat → `1.0` extruded) allowed instantaneous/animated transitions between a strict top-down 2D map and a tilted 3D topographic relief without reloading a single tile.
-2. **2-Stage Geometry-First / Semantic-Second Streaming ([ArrowWorker.ts:17-68](file:///d:/exploratory/duckdb-extension/deepgraph-webgpu/src/data/ArrowWorker.ts#L17-L68)):**
+2. **2-Stage Geometry-First / Semantic-Second Streaming (`ArrowWorker.ts:17-68`):**
    Notably, your June `ArrowWorker.ts` *already* prototyped split `.geom.arrow` and `.semantic.arrow` streams — the direct ancestor of our `v0.2` multi-archive column-group `"layers"` (`D8`)!
-3. **Perspective Screen-Space LOD Metric ([TileManager.ts:195-200](file:///d:/exploratory/duckdb-extension/deepgraph-webgpu/src/data/TileManager.ts#L195-L200)):**
+3. **Perspective Screen-Space LOD Metric (`TileManager.ts:195-200`):**
    Switching from uniform camera `zoom` to per-tile `dist < nodeSize * 1.5` naturally loaded finer tiles near the foreground of a tilted view and coarser tiles toward the horizon.
 
 #### Five Architectural Bugs Found in the June 2.5D Code (Must Not Repeat in `v0.2`)
 
 | Severity | Location in `deepgraph-webgpu` | Flaw Identified in Audit | Clean `v0.2` Solution on Current Compute Engine |
 | :---: | :--- | :--- | :--- |
-| **P0** | [TileNode](file:///d:/exploratory/duckdb-extension/deepgraph-webgpu/src/data/TileManager.ts#L39-L42) (`Box3(minX, minY, -1000..+1000)`) | **Horizon Frustum Explosion:** Treating every tile as an `[-1000, +1000]` tall column meant that pitching the camera past `~55°` caused almost *every* tile toward the horizon to intersect the frustum, exhausting the tile cache on empty sky above/below the data slab. | Bound every tile's 3D AABB tightly by `[zRangeMin * elevationScale, zRangeMax * elevationScale]` from `metadata.stats[zField]` (`min`/`max`) — shrinks prism height `50×–500×`. |
-| **P1** | [Renderer.ts:65](file:///d:/exploratory/duckdb-extension/deepgraph-webgpu/src/core/Renderer.ts#L65) (`ray.intersectPlane(Z=0)`) | **Parallax Drift on Wheel Zoom:** Wheel-zoom always intersected the `Z = 0` ground plane, so zooming while pointing at an elevated `Z > 0` peak zoomed *behind* the cluster, sliding the target off the cursor. | Query the depth of the point under the cursor (via our `0.1 ms` `PickingLayer` or active `targetZ`) and zoom along the cursor ray toward that exact 3D anchor. |
-| **P1** | [Renderer.ts:70](file:///d:/exploratory/duckdb-extension/deepgraph-webgpu/src/core/Renderer.ts#L70) (`if (currentDist < 0.2) return`) | **Hard `Float32` Precision Wall:** Deep zoom had to be hard-blocked at `dist = 0.2` to avoid `Float32` vertex jitter. | Already solved in `v0.1` (`Phase 5b`): extend our CPU `Float64` Relative-to-Center (`RTC`) offset `(rtcBaseX, rtcBaseY, rtcBaseZ)` to 3D before multiplying by the `3×4` view-projection matrix. |
-| **P1** | [main.ts:120-124](file:///d:/exploratory/duckdb-extension/deepgraph-webgpu/src/main.ts#L120-L124) (`One` / `OneMinusSrcAlpha`, `depthWrite: false`) | **Order-Dependent Alpha Sorting Artifacts:** Standard premultiplied `Over` blending without Z-sorting renders whichever tile happened to be added to `tileMeshes` last *in front of* closer tiles when tilted. | Use **order-independent** linear HDR / log-density accumulation (`D10` + `Phase 8b`) for emissive/density modes, plus **Schütz 2-Pass `atomicMin` Depth + Shell Accumulation** (Section 4.2) when true front-surface occlusion is desired. |
-| **P2** | [TileManager.ts:192, 212](file:///d:/exploratory/duckdb-extension/deepgraph-webgpu/src/data/TileManager.ts#L192-L212) | **Dead `allIntersectingChildrenLoaded` + Unbounded Queue:** `allIntersectingChildrenLoaded` was computed and thrown away, and `getVisibleTiles` had no `maxCacheSize` priority-score cap during rapid tilt-pans. | Reuse `PMTilesClient.getVisibleTiles`'s existing priority-scored budget (`maxCacheSize - 10`) with screen-space geometric error `nodeWorldWidth / distToTileAABB`. |
+| **P0** | `TileNode` (`Box3(minX, minY, -1000..+1000)`) | **Horizon Frustum Explosion:** Treating every tile as an `[-1000, +1000]` tall column meant that pitching the camera past `~55°` caused almost *every* tile toward the horizon to intersect the frustum, exhausting the tile cache on empty sky above/below the data slab. | Bound every tile's 3D AABB tightly by `[zRangeMin * elevationScale, zRangeMax * elevationScale]` from `metadata.stats[zField]` (`min`/`max`) — shrinks prism height `50×–500×`. |
+| **P1** | `Renderer.ts:65` (`ray.intersectPlane(Z=0)`) | **Parallax Drift on Wheel Zoom:** Wheel-zoom always intersected the `Z = 0` ground plane, so zooming while pointing at an elevated `Z > 0` peak zoomed *behind* the cluster, sliding the target off the cursor. | Query the depth of the point under the cursor (via our `0.1 ms` `PickingLayer` or active `targetZ`) and zoom along the cursor ray toward that exact 3D anchor. |
+| **P1** | `Renderer.ts:70` (`if (currentDist < 0.2) return`) | **Hard `Float32` Precision Wall:** Deep zoom had to be hard-blocked at `dist = 0.2` to avoid `Float32` vertex jitter. | Already solved in `v0.1` (`Phase 5b`): extend our CPU `Float64` Relative-to-Center (`RTC`) offset `(rtcBaseX, rtcBaseY, rtcBaseZ)` to 3D before multiplying by the `3×4` view-projection matrix. |
+| **P1** | `main.ts:120-124` (`One` / `OneMinusSrcAlpha`, `depthWrite: false`) | **Order-Dependent Alpha Sorting Artifacts:** Standard premultiplied `Over` blending without Z-sorting renders whichever tile happened to be added to `tileMeshes` last *in front of* closer tiles when tilted. | Use **order-independent** linear HDR / log-density accumulation (`D10` + `Phase 8b`) for emissive/density modes, plus **Schütz 2-Pass `atomicMin` Depth + Shell Accumulation** (Section 4.2) when true front-surface occlusion is desired. |
+| **P2** | `TileManager.ts:192, 212` | **Dead `allIntersectingChildrenLoaded` + Unbounded Queue:** `allIntersectingChildrenLoaded` was computed and thrown away, and `getVisibleTiles` had no `maxCacheSize` priority-score cap during rapid tilt-pans. | Reuse `PMTilesClient.getVisibleTiles`'s existing priority-scored budget (`maxCacheSize - 10`) with screen-space geometric error `nodeWorldWidth / distToTileAABB`. |
 
 ---
 
 ### 2.2 Audit of the June 2026 Octree Investigations
 
 Your historical octree research spanned three distinct architectural spikes:
-1. **[octree-review.md](file:///d:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox/logs/old/octree-review.md) (`attcs/OrthoTree` in `Octree_Study/`):** Correctly rejected in-memory C++ `StaticLinearOrthoTreeCore` (`std::vector<EntityID>` OOMs at $10^9$ rows) while extracting fast 3D Morton bit-interleaving (`detail/si_mortongrid.h`) and pointer-free linear integer node IDs.
-2. **[2026-06-29_entwine_arrowtiles_architecture_review.md](file:///d:/exploratory/duckdb-extension/duckdb-arrowtiles/logs/old/2026-06-29_entwine_arrowtiles_architecture_review.md):** Reverse-engineered Entwine's `chunk.cpp` (`256³` voxel occupancy pushdown) and proved why **PMTiles + Arrow IPC** beats EPT's hundreds of thousands of small `.laz`/`.bin` files + `ept-hierarchy/*.json` manifests.
-3. **[3d-implementation-plan.md](file:///d:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox/logs/old/3d-implementation-plan.md):** Proposed a separate C++ DuckDB extension (`duckdb-deepgraph-3d`) packing `[X_f32, Y_f32, Z_f32, RGBA_u32]` (`16 B/pt`) under `z/x/y/k` URLs.
+1. **`octree-review.md` (`attcs/OrthoTree` in `Octree_Study/`):** Correctly rejected in-memory C++ `StaticLinearOrthoTreeCore` (`std::vector<EntityID>` OOMs at $10^9$ rows) while extracting fast 3D Morton bit-interleaving (`detail/si_mortongrid.h`) and pointer-free linear integer node IDs.
+2. **`2026-06-29_entwine_arrowtiles_architecture_review.md`:** Reverse-engineered Entwine's `chunk.cpp` (`256³` voxel occupancy pushdown) and proved why **PMTiles + Arrow IPC** beats EPT's hundreds of thousands of small `.laz`/`.bin` files + `ept-hierarchy/*.json` manifests.
+3. **`3d-implementation-plan.md`:** Proposed a separate C++ DuckDB extension (`duckdb-deepgraph-3d`) packing `[X_f32, Y_f32, Z_f32, RGBA_u32]` (`16 B/pt`) under `z/x/y/k` URLs.
    - **What our November `v0.1` revival changed:** We no longer need a fragile C++ DuckDB internal extension or multi-file `z/x/y/k` URLs! Our PyO3/Rust `run_bucketer` (`arrowtiles-engine/src/lib.rs`) + `SplitMix64` deterministic priority + PMTiles v3 64-bit `TileId` index already solves 85% of what `3d-implementation-plan.md` called *"The Hard Part."*
 
 ---
@@ -126,7 +126,7 @@ Your historical octree research spanned three distinct architectural spikes:
 ## 5. Stage 2 Technical Blueprint (`v0.3`): Volumetric `octree-3d` Inside `.arrowtiles`
 
 ### 5.1 Verified PMTiles v3 `TileId` Capacity (`53-Bit` JS Ceiling = Depth `Z = 17`)
-We inspected `readVarint` and `findTile` directly in [node_modules/pmtiles/src/index.ts](file:///d:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox/node_modules/pmtiles/src/index.ts#L10-L56) (`pmtiles@4.4.1`):
+We inspected `readVarint` and `findTile` directly in `node_modules/pmtiles/src/index.ts` (`pmtiles@4.4.1`):
 - PMTiles v3 stores `tile_id` on disk as an unsigned LEB128 varint (up to 64 bits), **and `pmtiles-js` decodes it into a standard JavaScript `number` (`IEEE-754` 53-bit integer, `Number.MAX_SAFE_INTEGER = 9,007,199,254,740,991`)** without calling `zxyToTileId` inside `getDirectory` or `findTile`!
 - Define the level-order 3D octree `TileId` bijection:
   $$\text{TileId}_{3\text{D}}(z, x, y, k) = \frac{8^z - 1}{7} + \text{SFC}_{3\text{D}}(z, x, y, k)$$
@@ -153,7 +153,7 @@ We inspected `readVarint` and `findTile` directly in [node_modules/pmtiles/src/i
 2. **Gaia 3D Distance Caveat ("Fingers of God"):**
    In `gaia_mulitdimensional_2026_07_07.md`, distance was noted as $d = 1 / \varpi$ (`1 / parallax`). For noisy distant stars ($\sigma_\varpi / \varpi > 0.2$), naive $1 / \varpi$ stretches clusters into long radial spikes pointing straight at Earth ("Fingers of God"). When building a future 3D Gaia `.arrowtiles` octree (or 2.5D distance extrusion), join **Bailer-Jones (`r_med_geo` / `r_med_photogeo`)** distances in DuckDB or filter on `parallax_over_error > 5`.
 3. **Old `deepgraph-webgpu` Repo Hygiene Note:**
-   As Claude noted, `d:\exploratory\duckdb-extension\deepgraph-webgpu` has `node_modules/` and `dist/` tracked in its June git history (`MIT` license in its `README.md`). Keep it purely as a read-only historical reference; our clean `deepgraph-arrowtiles-sandbox` (`v0.1` native WebGPU, zero Three.js) is vastly cleaner and faster as the base for `v0.2` 2.5D.
+   As Claude noted, `<workspace>/deepgraph-webgpu` has `node_modules/` and `dist/` tracked in its June git history (`MIT` license in its `README.md`). Keep it purely as a read-only historical reference; our clean `deepgraph-arrowtiles-sandbox` (`v0.1` native WebGPU, zero Three.js) is vastly cleaner and faster as the base for `v0.2` 2.5D.
 4. **CPU vs. GPU Culling & LOD Debug Visualization (from Mesh-Octree Benchmarks):**
    - **Keep tile-box frustum culling on CPU (`< 0.05 ms` for `≤ 264` tiles), keep per-point culling in WGSL, and reserve GPU Indirect Compaction (`dispatchWorkgroupsIndirect`) for 2-pass 3D occlusion:** When running Schütz 2-pass surface splatting in `v0.2`/`v0.3`, Pass 1 (`atomicMin` depth) can append indices of on-screen points into a compact visibility buffer so Pass 2 (`accumBuffer` color shell) skips off-screen points from coarse `Z=0..2` ancestor tiles (`5×–10×` faster at deep zoom).
    - **Color-by-LOD Debug Lens:** Adding a diagnostic color mode that tints each point by its source tile zoom `z` (`White → Green → Yellow → Red`) makes verifying tilted 2.5D and 3D octree `SSE_px` transition rings effortless.

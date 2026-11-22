@@ -14,8 +14,8 @@ conversation_id: e91adbce-084e-445b-98b1-a434c428c86d
 - **Status:** Approved Consensus Plan (`2026-11-19_05_PLAN_all_merged-consensus-revival-plan.md`)
 - **Synthesizes:** `HANDOFF_2026-11-19_arrowtiles-revival.RECOVERED.md`, `IMPLEMENTATION_PLAN_2026-11-19_revised.md`, and the 5 verified consensus patches across Gemini + Claude reviews.
 - **Repos:**
-  - [`duckdb-arrowtiles`](file:///D:/exploratory/duckdb-extension/duckdb-arrowtiles) (writer — branch `revival/2026-11-wip`)
-  - [`deepgraph-arrowtiles-sandbox`](file:///D:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox) (viewer — branch `revival/2026-11-wip`)
+  - `duckdb-arrowtiles` (writer — branch `revival/2026-11-wip`)
+  - `deepgraph-arrowtiles-sandbox` (viewer — branch `revival/2026-11-wip`)
 
 ```mermaid
 flowchart TD
@@ -40,8 +40,8 @@ flowchart TD
    - Never run `git push`, delete branches, or rewrite history without explicit owner approval (`⛔`).
    - Large data stays local and untracked. Never delete or overwrite `public/gaia_full.arrowtiles` (31.0 GB), `public/gaia.arrowtiles` (30.3 GB), `public/lmsys_full.arrowtiles` (841 MB), `s3_cache/`, `archive/`, or `research/`.
 2. **Single writer & pre-flight check:** Run `git status` in both repos before starting each phase; stop and report any unexpected change.
-3. **Append-only progress log:** Never rewrite or truncate [`docs/PROGRESS_2026-11.md`](file:///D:/exploratory/duckdb-extension/duckdb-arrowtiles/docs/PROGRESS_2026-11.md); append one structured entry per phase.
-4. **MuniLM `logs/` convention:** Track `logs/README.md` and `logs/YYYY-MM-DD_<seq>_<TYPE>_<scope>_<topic-slug>.md` in [`duckdb-arrowtiles/logs/`](file:///D:/exploratory/duckdb-extension/duckdb-arrowtiles/logs) via surgical `.gitignore` (`logs/*`, `!logs/README.md`, `!logs/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]_*.md`), keeping 100% of historic raw transcripts untracked.
+3. **Append-only progress log:** Never rewrite or truncate [`docs/PROGRESS_2026-11.md`](../docs/PROGRESS_2026-11.md); append one structured entry per phase.
+4. **MuniLM `logs/` convention:** Track `logs/README.md` and `logs/YYYY-MM-DD_<seq>_<TYPE>_<scope>_<topic-slug>.md` in [`duckdb-arrowtiles/logs/`](./) via surgical `.gitignore` (`logs/*`, `!logs/README.md`, `!logs/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]_*.md`), keeping 100% of historic raw transcripts untracked.
 5. **Evidence-backed completion:** Every phase stops after passing its acceptance checks and recording commands, counts, and timings in `docs/PROGRESS_2026-11.md`, awaiting owner go-ahead before starting the next phase.
 
 ---
@@ -71,15 +71,15 @@ flowchart TD
 1. **Restore `PROGRESS_2026-11.md` (`D1`)** and confirm the 166-line `8c04c98` baseline is intact.
 2. **Archive stale root `.pyd` (`D2`)** to `archive/arrowtiles_core_2026-07-22.pyd`.
 3. **Bootstrap MuniLM `logs/` tracking (`Patch 5`):** Update `duckdb-arrowtiles/.gitignore` with surgical un-ignore rules; persist our Audit (`03`), Deep Research (`04`), and Merged Consensus Plan (`05`) logs in `duckdb-arrowtiles/logs/` and index `01`–`05` in `logs/README.md` (verifying 0 historic transcript bytes staged).
-4. **Harden Vite range server ([`vite.config.ts`](file:///D:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox/vite.config.ts)):**
+4. **Harden Vite range server ([`vite.config.ts`](https://github.com/kai-erlenbusch/deepgraph/blob/main/vite.config.ts)):**
    - Default `server.host` to `'127.0.0.1'`.
    - Wrap `decodeURIComponent` in `try/catch` (`400 Bad Request`).
    - Validate containment *before* `Range` checks via `path.relative(root, resolved)`, returning `403 Forbidden` on `..` or cross-directory escapes.
    - Cap single `Range` reads at `16 MiB`, returning a bounded `206 Partial Content`.
    - Revalidate `stat.size` and `stat.mtimeMs` on cached file descriptors.
-5. **Make writer tests portable ([`tests/`](file:///D:/exploratory/duckdb-extension/duckdb-arrowtiles/tests)):**
+5. **Make writer tests portable ([`tests/`](../tests/)):**
    - Add `zstd_decompress()` helper (`compression.zstd` on Python $\ge 3.14$, `pyarrow.input_stream(..., compression="zstd")` fallback on Python 3.10–3.13).
-   - Replace hardcoded `D:\exploratory\...` paths with relative workspace-sibling fixtures + env overrides that `pytest.skip` cleanly when local datasets are absent.
+   - Replace hardcoded `<workspace>/...` paths with relative workspace-sibling fixtures + env overrides that `pytest.skip` cleanly when local datasets are absent.
    - Assert in `conftest.py` that `Path(arrowtiles_core.__file__).resolve()` resides inside `.venv` (rejecting repo-root or global system `site-packages` builds).
 
 **Acceptance Checks:** Both trees clean after commit; `pytest` passes (`6 passed, 1 skipped` or better); `/..%2F..%2Fduckdb-arrowtiles%2Ftest.arrowtiles` returns `403`; `Range: bytes=0-` on a multi-GB file returns a bounded 16 MiB `206`; `npx tsc --noEmit` passes.
@@ -112,7 +112,7 @@ flowchart TD
 ### 3.4 Viewer v0.1 Compatibility & Fast Safety Fixes (`Patches 2 & 4a` + Guardrails)
 - Read v0.1 `format`/`version`, `bounds` (aspect ratio), `view` block, top-down generic `y`, and **seed `scatterplot.setDictionaries(...)` directly from `metadata.stats[col].categories` inside `loadDataset`** (since v0.1 files have no `DictionaryBatch` to trigger `onDictionariesLoaded`), keeping console-warn fallback for v0.0 files.
 - **Exclude `row_id` & Guard `BigInt` Columns:** Filter `'row_id'` (alongside `'x_u16'`, `'y_u16'`, `'z'`) out of automatic `schemaFields` GPU attribute requests in `main.ts`, and guard `typeof v === 'bigint' ? Number(v) : v` in `pmtiles.worker.ts` (`getFloat32Col`) so `BigUint64Array`/`BigInt64Array` columns never throw `TypeError`.
-- **Header `maxZoom` Plumbing (`Patch 2`):** Read `header.maxZoom` from PMTiles (`actual_max_z`) and replace hardcoded `14` at [`main.ts:768`](file:///D:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox/src/main.ts#L768) so spilled `z = 15..20` tiles under `D5` are visible *(temporary `f32` grid-snap past `z ≈ 13` accepted until Phase 5b)*.
+- **Header `maxZoom` Plumbing (`Patch 2`):** Read `header.maxZoom` from PMTiles (`actual_max_z`) and replace hardcoded `14` at [`main.ts:768`](https://github.com/kai-erlenbusch/deepgraph/blob/main/src/main.ts#L768) so spilled `z = 15..20` tiles under `D5` are visible *(temporary `f32` grid-snap past `z ≈ 13` accepted until Phase 5b)*.
 - **Arrow Nulls & Categorical `NaN` (`Patch 4a`):** Apply `nullBitmap -> NaN` in `pmtiles.worker.ts` (and `buf.fill(NaN)` for missing cols); guard `!(val == val)` *before* categorical palette lookup in **both** `ComputeRasterizer.ts:401-406` and `Scatterplot.ts` (`buildColorNode`), and expand `paletteBuf` from `% 10u` to 64 distinct colors + wrap note when `dictLen > 64`.
 - Cap non-spatial quadtree depth at `min(z, 2)` (`F-01`) and reset sticky `flipY` when exiting HR Diagram (`F-06`).
 - Provide `scripts/build_samples.py` (`samples/` gitignored per `D6`) for `<20 MB` Gaia & LMSys samples + synthetic edge-case sample inside `pytest`.

@@ -3,7 +3,7 @@
 ## 2026-11-19 — Phase 0: Make the work safe (no behaviour changes)
 
 - **Done:**
-  1. Read `D:\exploratory\duckdb-extension\HANDOFF_2026-11-19_arrowtiles-revival.md`, `START_HERE.md`, and `README.md` in both repositories, and completed a full line-by-line code review + ecosystem/format research audit (`logs/2026-11-19_01_RESEARCH_all_arrowtiles-format-and-ecosystem.md` and `logs/2026-11-19_02_AUDIT_all_deep-code-review-phases-0-7.md`).
+  1. Read `<workspace>/HANDOFF_2026-11-19_arrowtiles-revival.md`, `START_HERE.md`, and `README.md` in both repositories, and completed a full line-by-line code review + ecosystem/format research audit (`logs/2026-11-19_01_RESEARCH_all_arrowtiles-format-and-ecosystem.md` and `logs/2026-11-19_02_AUDIT_all_deep-code-review-phases-0-7.md`).
   2. Created branch `revival/2026-11-wip` from `main` in both repositories:
      - **Writer (`duckdb-arrowtiles`):** Updated `.gitignore` to ignore `.venv/`, `venv/`, `playwright-report/`, `test-results/` alongside data files (`*.arrowtiles`, `*.parquet`, `*.feather`, `*.pmtiles`). Committed uncommitted Oct 2026 work as `fcf2950` (`"WIP snapshot from Oct 2026, untested"`, 5 files, `+350 / -318`).
      - **Viewer (`deepgraph-arrowtiles-sandbox`):** Updated `.gitignore` to ignore `playwright-report/`, `test-results/`, `.pytest_cache/`, `data/`, and root/nested `*.arrowtiles`, `*.pmtiles`, `*.parquet`, `*.feather`. Committed uncommitted Oct 2026 work including `src/core/ComputeRasterizer.ts`, `tests/`, `playwright.config.ts`, and `.github/workflows/perf-ci.yml` as `e09fd85` (`"WIP snapshot from Oct 2026, untested"`, 15 files, `+3,425 / -468`).
@@ -17,33 +17,33 @@
   - **rustc:** `rustc 1.96.1 (31fca3adb 2026-06-26)`
   - **cargo:** `cargo 1.96.1 (356927216 2026-06-26)`
   - **maturin:** `maturin 1.14.1`
-  - **Python:** `Python 3.14.2` (`C:\Users\erlen\AppData\Local\Programs\Python\Python314\python.exe`; venv at `D:\exploratory\duckdb-extension\duckdb-arrowtiles\.venv`)
+  - **Python:** `Python 3.14.2` (`<python3.14>/python.exe`; venv at `<workspace>/duckdb-arrowtiles/.venv`)
   - **duckdb (Python):** `1.5.3` (with `pyarrow 24.0.0`, `pmtiles 3.7.0`, `pytest 9.1.1`)
   - **Chrome:** `157.0.8103.80` (`C:\Program Files\Google\Chrome\Application\chrome.exe`)
 
 - **Evidence:**
   - **Viewer Type-Check:**
-    - Command: `Set-Location -LiteralPath "D:\exploratory\duckdb-extension\deepgraph-arrowtiles-sandbox"; npx tsc --noEmit`
+    - Command: `Set-Location -LiteralPath "<workspace>/deepgraph-arrowtiles-sandbox"; npx tsc --noEmit`
     - Output: `exit code 0` (0 errors).
   - **Viewer Dev Server & Range Endpoint:**
     - Command: `npm run dev` + `curl.exe -s -I "http://localhost:5173/"` + `curl.exe -s -D - -o NUL -H "Range: bytes=0-126" "http://localhost:5173/test.arrowtiles"`
     - Output: `HTTP/1.1 200 OK` (`Content-Type: text/html`) on `/`; `HTTP/1.1 206 Partial Content` (`Content-Range: bytes 0-126/2957198`, `Content-Length: 127`) on `/test.arrowtiles`.
   - **Writer Release Build:**
-    - Command: `$env:VIRTUAL_ENV = "D:\exploratory\duckdb-extension\duckdb-arrowtiles\.venv"; Set-Location -LiteralPath "D:\exploratory\duckdb-extension\duckdb-arrowtiles\arrowtiles-engine"; maturin develop --release`
+    - Command: `$env:VIRTUAL_ENV = "<workspace>/duckdb-arrowtiles/.venv"; Set-Location -LiteralPath "<workspace>/duckdb-arrowtiles/arrowtiles-engine"; maturin develop --release`
     - Output: `Finished 'release' profile [optimized] target(s) in 2m 09s`, `Built wheel for abi3 Python >= 3.9`, `Installed arrowtiles_core-0.1.0` (`exit code 0`).
   - **Writer Pytest Suite:**
-    - Command: `& "D:\exploratory\duckdb-extension\duckdb-arrowtiles\.venv\Scripts\python.exe" -m pytest -v`
+    - Command: `& "<workspace>/duckdb-arrowtiles/.venv/Scripts/python.exe" -m pytest -v`
     - Output: `6 passed, 1 skipped in 2.52s` (`test_gaia_batch_schema_and_hammer_smoke_build`, `test_lmsys_parquet_schema_columns`, `test_lmsys_smoke_build_on_sample`, `test_read_lmsys_pmtiles_metadata_and_schema`, `test_read_gaia_pmtiles_metadata_and_schema`, `test_build_generic_synthetic_roundtrip` all PASSED; `test_legacy_duckdb_loadable_extension` SKIPPED).
 
 - **Not done / failed:**
   - **Viewer Playwright E2E (`npx playwright test --reporter=list`):** Failed at browser launch (`exit code 1`, `3ms`) with:
-    `Error: browserType.launch: Executable doesn't exist at C:\Users\erlen\AppData\Local\ms-playwright\chromium_headless_shell-1228\chrome-headless-shell-win64\chrome-headless-shell.exe`
+    `Error: browserType.launch: Executable doesn't exist at <user-home>/AppData/Local/ms-playwright/chromium_headless_shell-1228/chrome-headless-shell-win64/chrome-headless-shell.exe`
     (`ms-playwright` currently has builds `1208`, `1243`, and `1255`, plus system Chrome `157.0.8103.80`). Per Phase 0 rules (no behaviour/config changes) and Phase 6 plan (which replaces the SwiftShader headless test with a real-GPU Chrome test), we recorded this failure rather than modifying `playwright.config.ts` in Phase 0.
   - **`git push`:** Not run (stopped at ⛔ gate per owner guardrail).
 
 - **Questions for owner:**
   1. ⛔ **Git push:** Would you like to keep both `revival/2026-11-wip` branches local for now, or approve `git push -u origin revival/2026-11-wip` on one/both repos?
-  2. **Stale root binary (`duckdb-arrowtiles\arrowtiles_core.pyd`):** An untracked `arrowtiles_core.pyd` from `2026-07-22` sits in the writer repo root (`sys.path[0]`), which shadows `.venv`/`site-packages` if someone runs `python arrowtiles.py` directly from the repo root (`tests/conftest.py` already bypasses it for `pytest`). May I move `D:\exploratory\duckdb-extension\duckdb-arrowtiles\arrowtiles_core.pyd` into `archive/` (or delete it)?
+  2. **Stale root binary (`duckdb-arrowtiles\arrowtiles_core.pyd`):** An untracked `arrowtiles_core.pyd` from `2026-07-22` sits in the writer repo root (`sys.path[0]`), which shadows `.venv`/`site-packages` if someone runs `python arrowtiles.py` directly from the repo root (`tests/conftest.py` already bypasses it for `pytest`). May I move `<workspace>/duckdb-arrowtiles/arrowtiles_core.pyd` into `archive/` (or delete it)?
   3. **Phase 1 go-ahead & Y-axis / Dictionary conventions:** In our deep code review, we found two key spec details to lock cleanly in Phase 1's `docs/SPEC.md`:
      - **Y-axis direction:** `build_gaia` currently writes top-down `y_norm` (`0` = North/top) while `build_generic` writes bottom-up `y_norm` (`0` = `min_y`), causing generic datasets to render inverted unless `Flip Y` is toggled. Should v0.1 standardize `y_u16` to match PMTiles/Web-Mercator top-down tile coordinates (`y_norm = 0` at `max_y` / North, `y_norm = 1` at `min_y` / South, matching tile `ty = 0` at top), or Cartesian bottom-up? (Recommended: **top-down matching PMTiles tile row `y`**, so tile `(z, x, y)` and intra-tile `y_u16` point in the exact same direction!)
      - **Dictionary columns in v0.1:** Currently `categorical_columns` emit a global DuckDB `ENUM` -> Arrow `DictionaryBatch` inside each tile payload, which works end-to-end in both Python and JS `apache-arrow`. Are you happy codifying "optional dictionary-encoded columns allowed when using a file-global dictionary per column" in `SPEC.md` v0.1?
@@ -53,7 +53,7 @@
 Re-ran every Phase 0 acceptance check myself instead of trusting the entry above, and reviewed `arrowtiles.py` (442 lines) and `arrowtiles-engine/src/lib.rs` (610 lines) in full. No repo source file was changed. Probe outputs went to a scratch folder outside both repos.
 
 - **Done:**
-  1. **Handoff file missing.** `D:\exploratory\duckdb-extension\HANDOFF_2026-11-19_arrowtiles-revival.md` (20,379 bytes) and `AGENT_PROMPT_2026-11-19_arrowtiles-revival.md` were on disk at 18:12 (per the earlier agent's directory listing) but were gone at 18:40. I recovered the handoff verbatim (355 lines) from the earlier agent's `read_file` output into a **new** file: `D:\exploratory\duckdb-extension\HANDOFF_2026-11-19_arrowtiles-revival.RECOVERED.md`. I could not recover `AGENT_PROMPT_*`.
+  1. **Handoff file missing.** `<workspace>/HANDOFF_2026-11-19_arrowtiles-revival.md` (20,379 bytes) and `AGENT_PROMPT_2026-11-19_arrowtiles-revival.md` were on disk at 18:12 (per the earlier agent's directory listing) but were gone at 18:40. I recovered the handoff verbatim (355 lines) from the earlier agent's `read_file` output into a **new** file: `<workspace>/HANDOFF_2026-11-19_arrowtiles-revival.RECOVERED.md`. I could not recover `AGENT_PROMPT_*`.
   2. **No uncommitted work was lost by the WIP commits.**
      - At 18:12 the viewer showed `M` on 13 tracked files. Four of them (`src/counter.ts`, `src/global.d.ts`, `src/assets/typescript.svg`, `src/assets/vite.svg`) are not in `e09fd85`, yet the tree is clean. So they were stat-only changes (line endings) with no content diff.
      - The line counts reconcile: tracked +1,691/−468, plus new files +1,724 (`ComputeRasterizer.ts` 1,587, `memory-leak.spec.ts` 67, `perf-ci.yml` 40, `playwright.config.ts` 30, `compute_test.mjs` 0), plus `.gitignore` +10. That gives **+3,425/−468, which equals `e09fd85`**.
@@ -107,7 +107,7 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
      - Repo root `.pyd` (2026-07-22); system Python `site-packages` (2026-07-19); `.venv` (2026-11-19).
      - Both older ones predate the Oct `lib.rs` changes. `python arrowtiles.py` run from the repo root, or with system Python, silently uses an old engine.
   8. **Test portability:**
-     - The tracked tests hardcode `D:\exploratory\…` paths.
+     - The tracked tests hardcode `<workspace>/…` paths.
      - They import `compression.zstd`, which exists only in Python ≥ 3.14, while the README says 3.10+.
      - Fine for local Phase 0, but they will not run in CI as-is.
   9. **Fact check:** `public\gaia_full.arrowtiles` is **31.0 GB** (31,016,634,401 bytes), not the 15.8 GB stated in the handoff and both READMEs. A second 30.3 GB `public\gaia.arrowtiles` also exists. I did not touch either file.
@@ -160,7 +160,7 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
     - `animatedEpochKyr` is used at `main.ts:657/662` before its declaration at `:667`.
 
 - **Questions for owner:**
-  1. The handoff file disappeared from `D:\exploratory\duckdb-extension\` between 18:12 and 18:40. Was that you? Should the recovered copy become the working reference?
+  1. The handoff file disappeared from `<workspace>/` between 18:12 and 18:40. Was that you? Should the recovered copy become the working reference?
   2. ⛔ `git push` of `revival/2026-11-wip` (both repos): still not run, awaiting your call.
   3. May I move the stale root `duckdb-arrowtiles\arrowtiles_core.pyd` into `archive\`? (Same question as above; I agree with it.) The 2026-07-19 copy in system Python's `site-packages` has the same problem; uninstalling it is your call.
   4. `logs/` is gitignored, so the audit and research files this log cites are not versioned. Should reviews live in tracked `docs/reviews/` instead?
@@ -170,17 +170,17 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
 
 - **Done:**
   1. **Restored `docs/PROGRESS_2026-11.md` (`D1`):** Ran `git checkout -- docs/PROGRESS_2026-11.md` to restore the 117-line independent verification and P1–P6 baseline probe record from commit `8c04c98` (verified 166 lines prior to appending this entry).
-  2. **Archived stale root binary (`D2`):** Moved `D:\exploratory\duckdb-extension\duckdb-arrowtiles\arrowtiles_core.pyd` (`2026-07-22`) to `archive/arrowtiles_core_2026-07-22.pyd` so `sys.path[0]` can no longer shadow `.venv` builds.
+  2. **Archived stale root binary (`D2`):** Moved `<workspace>/duckdb-arrowtiles/arrowtiles_core.pyd` (`2026-07-22`) to `archive/arrowtiles_core_2026-07-22.pyd` so `sys.path[0]` can no longer shadow `.venv` builds.
   3. **Configured MuniLM `logs/` tracking (`Patch 5`):** Updated `duckdb-arrowtiles/.gitignore` with surgical rules (`logs/*`, `!logs/README.md`, `!logs/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]_*.md`), persisted `2026-11-19_03_AUDIT_all_comprehensive-code-review-and-archaeology.md`, `2026-11-19_04_RESEARCH_all_ecosystem-format-duckdb15-and-licensing.md`, and the merged consensus plan `2026-11-19_05_PLAN_all_merged-consensus-revival-plan.md`, and updated `logs/README.md`. Verified `0` historic raw transcript files are staged.
   4. **Hardened Vite range middleware (`deepgraph-arrowtiles-sandbox/vite.config.ts`):** Bound `server.host` to `'127.0.0.1'` by default, wrapped `decodeURIComponent` in `try/catch` (`400`), enforced directory containment via `path.relative` before `Range` evaluation (`403`), capped single range reads to `16 MiB` (`16,777,216` bytes), and revalidated `stat.size` + `stat.mtimeMs` on cached file descriptors.
   5. **Made writer `pytest` suite portable (`duckdb-arrowtiles/tests/`):** Replaced hardcoded `D:\` paths with workspace-relative fixtures + env-var overrides (`ARROWTILES_*`) that cleanly `pytest.skip` when absent, added a cross-Python 3.10–3.14 `zstd_decompress` helper (`compression.zstd` -> `pyarrow` streaming Zstd fallback), and asserted in `conftest.py` (plus explicit `test_arrowtiles_core_loaded_from_venv`) that `arrowtiles_core.__file__` resolves inside `.venv`.
 
 - **Evidence:**
   - **Writer `pytest` Suite:**
-    - Command: `& "D:\exploratory\duckdb-extension\duckdb-arrowtiles\.venv\Scripts\python.exe" -m pytest -v -rs -p no:cacheprovider`
+    - Command: `& "<workspace>/duckdb-arrowtiles/.venv/Scripts/python.exe" -m pytest -v -rs -p no:cacheprovider`
     - Output: `7 passed, 1 skipped in 2.09s` (including new `test_arrowtiles_core_loaded_from_venv` + PyArrow Zstd parity check; missing-file fixture override verified `1 passed, 1 skipped in 0.06s`).
   - **Viewer TypeScript Check:**
-    - Command: `Set-Location -LiteralPath "D:\exploratory\duckdb-extension\deepgraph-arrowtiles-sandbox"; npx tsc --noEmit`
+    - Command: `Set-Location -LiteralPath "<workspace>/deepgraph-arrowtiles-sandbox"; npx tsc --noEmit`
     - Output: `exit code 0` (0 errors).
   - **Hardened Vite Dev Server Checks (`127.0.0.1:5198`):**
     - Listener check (`Get-NetTCPConnection -LocalPort 5198 -State Listen`): bound exclusively to `127.0.0.1:5198` (not `0.0.0.0`); listener verified closed after shutdown.
@@ -218,7 +218,7 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
 
 - **Questions for owner:**
   1. **Review `docs/SPEC.md`:** Any edits or tightening needed in `docs/SPEC.md` before I implement the Phase 1 writer (`arrowtiles/` package + `lib.rs`), reference reader, validator, sample builder, and Phase 1b viewer compatibility?
-  2. **⛔ `git push`:** Let me know if you want `revival/2026-11-wip` pushed as an off-machine backup (note: tracked logs contain local `C:\Users\erlen\...` / `D:\...` paths and session UUIDs if either remote repo is public).
+  2. **⛔ `git push`:** Let me know if you want `revival/2026-11-wip` pushed as an off-machine backup (note: tracked logs contain local `<user-home>/...` / `D:\...` paths and session UUIDs if either remote repo is public).
 
 
 ## 2026-11-19 — Phase 1 (finish): `arrowtiles/` v0.1 package, validator, reader, sample builder, and Phase 1b viewer compatibility
@@ -245,7 +245,7 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
 
 - **Evidence:**
   - **Writer `pytest` Suite (`13 passed, 1 skipped`):**
-    - Command: `& "D:\exploratory\duckdb-extension\duckdb-arrowtiles\.venv\Scripts\python.exe" -m pytest -v -rs -p no:cacheprovider`
+    - Command: `& "<workspace>/duckdb-arrowtiles/.venv/Scripts/python.exe" -m pytest -v -rs -p no:cacheprovider`
     - Output: `13 passed, 1 skipped in 3.28s` (covers Hilbert bit-shift invariants across 20,000+ cases, synthetic edge-case archive with `NaN`/`Inf`/`NULL` coords + colliding `x_norm` + 20-category `UInt8` + 300-category `UInt16` + coordinate round-trip within `span / (2 * 65535 * 2^z)`, leaf spillover past `nominal_max_zoom` + `z=20` exact-duplicate overflow guard, reserved column & invalid/reserved `custom_metadata` errors in Python and Rust, multi-file dense `row_id`, and legacy `v0.0` compatibility).
   - **Validator & `max_compressed_tile_bytes` Measurements:**
     - `samples/gaia_sample.arrowtiles` (`v0.1`, `4.26 MiB`): `[PASS] spec=0.1 tiles=342 rows=149,942 dropped=0 zoom=0..7 (header=7) max_tile_rows=19,477 max_compressed_tile=566,728 B (0.54 MiB at (0, 0, 0))`.
@@ -257,9 +257,9 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
     - `npm run build`: `exit code 0` (`dist/` built cleanly).
     - Live Chrome WebGPU Playwright check (`scratch/verify_phase1_viewer.mjs`): `exit code 0`, `pageErrors: []`, `consoleErrors: []`, legacy `v0.0` warning verified on `gaia_full.arrowtiles` (`archiveMaxZoom: 14`, `4.33M` stars at `155 FPS`), `v0.1` `gaia_sample.arrowtiles` rendered (`archiveMaxZoom: 7`, `row_id`/`z` excluded from GPU attributes, HR Diagram capped at `maxZ = 2`, `flipY` reset to `false` on Sky Lens switch), and `v0.1` `lmsys_sample.arrowtiles` rendered with `model` categorical legend in both `Compute (Atomic)` and `Hardware Instanced` at `240 FPS`.
     - Screenshots saved for visual review:
-      - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase1_legacy_gaia_full.png`
-      - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase1_v01_gaia_sample.png`
-      - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase1_v01_lmsys_sample.png`
+      - `<artifacts>/phase1_legacy_gaia_full.png`
+      - `<artifacts>/phase1_v01_gaia_sample.png`
+      - `<artifacts>/phase1_v01_lmsys_sample.png`
 
 - **Not done / failed:**
   - **`git push`:** Not run (holding local commits on `revival/2026-11-wip` unless explicitly requested per `⛔` guardrail).
@@ -276,7 +276,7 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
   3. **Synced combined review additions into `logs/2026-11-19_05_PLAN_all_merged-consensus-revival-plan.md`:** Folded full `--resume` fingerprinting + `resume=True` test, single-pass SQL preflight, byte-identical output pass/fail gate, `> 16 MiB` `v0.1` tile error + category code bounds check, `64 MiB` explicit range / `413` error in `vite.config.ts`, free-text column policy (`⛔ D7a`), Phase 3 SplitMix64 random priority, and Phase 5 canonical `effectiveFlipY` into the governing plan.
 
 - **Evidence:**
-  - Command: `& "D:\exploratory\duckdb-extension\duckdb-arrowtiles\.venv\Scripts\python.exe" -m pytest -v -rs -p no:cacheprovider`
+  - Command: `& "<workspace>/duckdb-arrowtiles/.venv/Scripts/python.exe" -m pytest -v -rs -p no:cacheprovider`
   - Output: `31 passed, 1 skipped in 5.40s`.
 
 - **Questions for owner (before Phase 2):**
@@ -312,7 +312,7 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
     - `validate`: `ok: true`, `10,917` tiles, `2,835,490` rows, `zoom = 0..7` (`header = 7`), `warnings: []`, `errors: []`.
     - Independent 2nd build SHA-256 match: both builds produced **`552f70129e3a53497acb11b59ae2ebbaf12f1c1221d303d1b70596c36b5dcd45`** (exact byte-for-byte match across all `2,835,490` rows).
   - **Writer `pytest` Suite:**
-    - Command: `& "D:\exploratory\duckdb-extension\duckdb-arrowtiles\.venv\Scripts\python.exe" -m pytest -v -rs -p no:cacheprovider`
+    - Command: `& "<workspace>/duckdb-arrowtiles/.venv/Scripts/python.exe" -m pytest -v -rs -p no:cacheprovider`
     - Output: **`44 passed, 1 skipped in 8.29s`**.
   - **Viewer TypeScript, Production Build & Dev Server `16 MiB` / `64 MiB` / `413` Verification (`127.0.0.1:5199`):**
     - `npx tsc --noEmit` & `npm run build`: `exit code 0`.
@@ -346,7 +346,7 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
 
 - **Evidence:**
   - **Writer `pytest` Suite (`48 passed, 1 skipped`):**
-    - Command: `& "D:\exploratory\duckdb-extension\duckdb-arrowtiles\.venv\Scripts\python.exe" -m pytest -v -rs -p no:cacheprovider`
+    - Command: `& "<workspace>/duckdb-arrowtiles/.venv/Scripts/python.exe" -m pytest -v -rs -p no:cacheprovider`
     - Output: **`48 passed, 1 skipped in 14.71s`** (includes `tests/test_phase3_priority_and_presets.py` verifying bit-exact equivalence between Rust `splitmix64_hash`, Python `splitmix64_py`, and DuckDB 1.5.3 `UHUGEINT` SQL across golden vectors, boundary `u64`/`i64` pairs, and 1,000 random 64-bit `row_id`s; exact top-25 `SplitMix64` root-tile selection; `--preset gaia` on both `(phot_g_mean_mag, bp_rp)` and `(magnitude, bv)` schemas + CLI flag forwarding; and explicit `tile_capacity` / `sampling` passthrough).
   - **2.84M-Row LMSys `⛔ D7` Comparison Metrics (`SplitMix64(seed=42)`, `tile_capacity=100,000`):**
     - `samples/lmsys_d7_even_coverage.arrowtiles`: `[PASS] spec=0.1`, **`298,682,719` B (`284.85 MiB`)**, SHA-256 `f77e6ab5f89573fcf8bc30c56fa1b9b1beade1d37f806147b0d457cd5dfbe64c`, **`10,768` tiles**, `zoom = 0..7`, `max_tile_rows = 79,008`, `max_compressed_tile = 8,437,095 B` (`8.05 MiB` at `(3, 3, 4)`). At `Z=2` overview: `21` tiles, `0.29M` points rendered (preserves outer islands & core color detail); at `Z=4` cluster zoom: `85` tiles, `1.61M` points rendered.
@@ -355,11 +355,11 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
     - `npx tsc --noEmit` & `npm run build`: `exit code 0`.
     - Live Chrome WebGPU check across `gaia_full.arrowtiles` (`legacy v0.0`, `abs_m`), `gaia_sample.arrowtiles` (`v0.1`, `phot_g_mean_mag` + HR Diagram `yField == 'phot_g_mean_mag'`), `lmsys_d7_even_coverage.arrowtiles` (`Z=2` & `Z=4`), and `lmsys_d7_proportional.arrowtiles` (`Z=2` & `Z=4`): `exit code 0`, `pageErrors: []`, `consoleErrors: []`.
     - Screenshots saved for `⛔ D7` owner review:
-      - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase3_d7_lmsys_even_coverage_z2.png`
-      - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase3_d7_lmsys_proportional_z2.png`
-      - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase3_d7_lmsys_even_coverage_z4.png`
-      - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase3_d7_lmsys_proportional_z4.png`
-      - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase3_v01_gaia_sample_phot_g.png`
+      - `<artifacts>/phase3_d7_lmsys_even_coverage_z2.png`
+      - `<artifacts>/phase3_d7_lmsys_proportional_z2.png`
+      - `<artifacts>/phase3_d7_lmsys_even_coverage_z4.png`
+      - `<artifacts>/phase3_d7_lmsys_proportional_z4.png`
+      - `<artifacts>/phase3_v01_gaia_sample_phot_g.png`
 
 - **Not done / failed:**
   - **`git push`:** Not run (holding local commits on `revival/2026-11-wip` unless explicitly requested per `⛔` guardrail).
@@ -396,10 +396,10 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
       - Full 36-col schema: `.arrowtiles` **`249.3 ms` TTFF (`23` reqs)** / **`113.7 ms` Deep Zoom (`16` reqs)** vs. `448.3 ms` / `134.3 ms` (`parquet_tile_rg`) and `1,116.6 ms` (`839` reqs) / `836.0 ms` (`684` reqs) (`parquet_page_idx`).
       - 3-of-38 projection (`x_u16, y_u16, clusters_14`): `parquet_page_idx` **`158.1 ms` TTFF (`4.62 MiB`, `113` reqs)** and `parquet_tile_rg` `235.6 ms` TTFF / **`37.5 ms` Deep Zoom (`1.30 MiB`, `32` reqs)** vs. monolithic 36-col `.arrowtiles` `212.1 ms` TTFF (`40.39 MiB`, `23` reqs) / `107.5 ms` Deep Zoom (`24.11 MiB`, `16` reqs).
   - **Updated `clusters_14` Log-Density Screenshots:**
-    - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase4_d7_clusters14_proportional_25k_z2.png`
-    - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase4_d7_clusters14_proportional_25k_z4.png`
-    - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase4_d7_clusters14_proportional_100k_z2.png`
-    - `C:\Users\erlen\.gemini\antigravity\brain\e91adbce-084e-445b-98b1-a434c428c86d\phase4_d7_clusters14_even_coverage_z2.png`
+    - `<artifacts>/phase4_d7_clusters14_proportional_25k_z2.png`
+    - `<artifacts>/phase4_d7_clusters14_proportional_25k_z4.png`
+    - `<artifacts>/phase4_d7_clusters14_proportional_100k_z2.png`
+    - `<artifacts>/phase4_d7_clusters14_even_coverage_z2.png`
 
 - **Not done / failed:**
   - **`git push`:** Not run (holding local commits on `revival/2026-11-wip` unless explicitly requested per `⛔` guardrail).
@@ -427,7 +427,7 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
 
 - **Done:**
   1. **Locked Owner Decisions `D8`, `D9`, and `D10` (`2026-11-20`) in `05_PLAN`, `SPEC.md`, and `BENCHMARK_parquet_vs_arrowtiles.md`:**
-     - **`D8`:** Kept **`.arrowtiles` (`v0.1`)** as the primary spatial pyramid container, promoted column-group `"layers"` sidecars for wide tables to a **required `v0.2` roadmap item** (`SPEC.md` §6.4), locked standalone `.arrowtiles` `row_id` + retained-column decoding in Phase 7 (`resolveRowAttributes` hook for optional sidecar Parquet cold attributes), committed the reproducible browser benchmark harness under [`scripts/bench/`](file:///D:/exploratory/duckdb-extension/duckdb-arrowtiles/scripts/bench), and ran the throttled WAN (`50 ms` RTT, `50 Mbps`) `lmsys_full` benchmark.
+     - **`D8`:** Kept **`.arrowtiles` (`v0.1`)** as the primary spatial pyramid container, promoted column-group `"layers"` sidecars for wide tables to a **required `v0.2` roadmap item** (`SPEC.md` §6.4), locked standalone `.arrowtiles` `row_id` + retained-column decoding in Phase 7 (`resolveRowAttributes` hook for optional sidecar Parquet cold attributes), committed the reproducible browser benchmark harness under [`scripts/bench/`](../scripts/bench/), and ran the throttled WAN (`50 ms` RTT, `50 Mbps`) `lmsys_full` benchmark.
      - **`D9`:** Locked **Compute-Only** for Phase 5b (retiring `Scatterplot` Three.js instanced meshes & `WebGPUAdapter.ts`, owning `GPUBuffer`s directly, moving 2s axis transitions into WGSL, and adding a plain-WebGPU point highlight overlay in Phase 7/8).
      - **`D10`:** Locked **Split-by-Mode** for Phase 5b (per-point ACES + sRGB scoped to Gaia optical Modes 0 & 3; generic numeric Mode 1 moved to Resolve-pass log-density tone mapping alongside categorical Mode 1; race-free interval-gated `prevW = atomicAdd(&accumBuf[base2], w)` in `2 × u32` `8 B/px` `accumBuffer` + adapter `maxStorageBufferBindingSize`).
   2. **Fixed Sparse/1-Based `UTINYINT` / `USMALLINT` `--categorical-cols` Remapping (`arrowtiles/builder.py:496`):**
@@ -438,11 +438,11 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
   4. **Executed Phase 5a — Pure Structural Refactor + `D11` Embeddable Library Boundary + `docs/API.md` Draft (`deepgraph-arrowtiles-sandbox`):**
      - Split `src/main.ts` (`1,112` lines -> **`112` lines**) into clean **library modules** (`src/lib/types.ts`, `src/lib/DatasetSession.ts`, `src/lib/ViewState.ts`, `src/lib/RenderLoop.ts`, `src/lib/ViewerLayer.ts`, `src/index.ts`) and **demo-app modules** (`src/demo/gaiaPreset.ts`, `src/demo/ControlsPanel.ts`, `src/main.ts`).
      - Enforced strict `D11` boundary: zero `lil-gui`, zero `window.location` / `URLSearchParams`, zero DOM access outside `container` (with `ResizeObserver` + container-relative wheel zoom + full `Renderer.dispose()` cleanup), zero Three.js types in public API signatures, and zero Gaia strings/heuristics in library modules (`ViewState.effectiveFlipY` drives both `PMTilesClient` and `Scatterplot` `yRange`).
-     - Added `"typecheck": "tsc --noEmit"` and explicit `"fflate": "^0.8.3"` in `package.json`, and drafted [`docs/API.md`](file:///D:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox/docs/API.md) for review.
+     - Added `"typecheck": "tsc --noEmit"` and explicit `"fflate": "^0.8.3"` in `package.json`, and drafted [`docs/API.md`](https://github.com/kai-erlenbusch/deepgraph/blob/main/docs/API.md) for review.
 
 - **Evidence:**
   - **Writer `pytest` Suite (`49 passed, 1 skipped`):**
-    - Command: `& "D:\exploratory\duckdb-extension\duckdb-arrowtiles\.venv\Scripts\python.exe" -m pytest -v -rs -p no:cacheprovider`
+    - Command: `& "<workspace>/duckdb-arrowtiles/.venv/Scripts/python.exe" -m pytest -v -rs -p no:cacheprovider`
     - Output: **`49 passed, 1 skipped in 10.94s`** (including `test_sparse_utinyint_usmallint_categorical_cols`).
   - **Throttled WAN Benchmark (`lmsys_full`, `50 ms` RTT, `50 Mbps`, `5` runs Median / P95):**
     - `proj_3_of_38`: `.arrowtiles` (`36`-col monolithic) `HS = 157.3 / 159.3 ms`, `TTFF = 7,223.3 / 7,265.8 ms` (`40.39 MiB`, `23` reqs), `Deep = 4,208.1 / 4,220.4 ms`; `parquet_tile_rg` `HS = 684.0 / 693.7 ms`, **`TTFF = 1,322.5 / 1,332.7 ms`** (`3.13 MiB`, `46` reqs), **`Deep = 514.1 / 541.4 ms`**; `parquet_page_idx` `HS = 258.9 / 264.4 ms`, `TTFF = 1,901.7 / 1,940.4 ms` (`4.62 MiB`, `113` reqs — slower than `parquet_tile_rg` due to `50 ms` RTT amplification), `Deep = 1,273.4 / 1,301.8 ms` (`90` reqs).
@@ -738,7 +738,7 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
   1. **Phase A — Repo Cleanup, Disk Organization, MuniLM `logs/` Bootstrap & CI (`4ee4f7d` in `deepgraph`, `fe386af` in `arrowtiles`):**
      - Deleted stale tracked files (`START_HERE.md` in both repos; `task.md`, `src/assets/*`, `tests/memory-leak.spec.ts`, `.github/workflows/perf-ci.yml` in `deepgraph`; `requirements.txt` and `tests/test_legacy_duckdb_extension.py` in `arrowtiles`).
      - Split `deepgraph` Playwright scripts into `< 5 MiB` sample-only `npm run test:e2e` and `npm run test:e2e:heavy`, bootstrapped `deepgraph/logs/README.md`, added `[project.optional-dependencies] dev = ["pytest>=8.0"]` in `pyproject.toml`, and added `.github/workflows/ci.yml` (`main` / `master`) in both repos.
-     - Reclaimed `~31.2 GB` of duplicate/unused untracked artifacts (keeping `public/gaia_full.arrowtiles`, `public/lmsys_full.arrowtiles`, `samples/gaia_sample.arrowtiles`, `samples/lmsys_sample.arrowtiles`, `samples/lmsys_full_v01.arrowtiles`, and `samples/lmsys_d7_proportional_25k.arrowtiles`), relocated `archive/` + `research/` to `D:\exploratory\duckdb-extension\archive\`, and moved 27 pre-MuniLM June/July raw logs into `arrowtiles/logs/old/`.
+     - Reclaimed `~31.2 GB` of duplicate/unused untracked artifacts (keeping `public/gaia_full.arrowtiles`, `public/lmsys_full.arrowtiles`, `samples/gaia_sample.arrowtiles`, `samples/lmsys_sample.arrowtiles`, `samples/lmsys_full_v01.arrowtiles`, and `samples/lmsys_d7_proportional_25k.arrowtiles`), relocated `archive/` + `research/` to `<workspace>/archive/`, and moved 27 pre-MuniLM June/July raw logs into `arrowtiles/logs/old/`.
   2. **Phase B — `AGENTS.md` & `v0.1.0` Documentation Overhaul (`5e07166` in `deepgraph`):**
      - Added `AGENTS.md` in both repositories (`deepgraph` and `arrowtiles`), rewrote `arrowtiles/README.md` with the 2-stage `run_bucketer` + Rayon Zstd PMTiles v3 architecture + CLI & verified `ArrowTilesReader` Python API docs, and updated `deepgraph/README.md` & `docs/API.md`.
 - **Evidence:**

@@ -34,11 +34,11 @@ conversation_id: e91adbce-084e-445b-98b1-a434c428c86d
 | **ArrowTiles + DeepGraph** | **WebGPU** (WGSL Compute + Instanced) | **10M – 2B+** points (proven on 1.8B Gaia) | **Yes — Single-file `.arrowtiles`** (PMTiles v3 + Zstd Arrow IPC) | **DuckDB + Rust** -> Zero-Copy Arrow IPC + JSON stats/ENUMs | Global priority/magnitude seamless LOD, per-pixel statistical mean fields, 6D motion trails, arbitrary tabular schemas | *Currently `CC BY-NC 4.0` (Owner decision pending)* |
 
 ### Key Architectural Insights from State-of-the-Art WebGPU Research
-1. **Why WGSL Compute Splatting Beats Hardware Instancing by 10x–100x (Schütz et al., HPG 2022):** Hardware triangle/quad instancing (`Scatterplot.ts`) always rasterizes **2×2 pixel quads** for derivative math, wasting **75% of fragment lanes** on sub-pixel points and stalling ROP blend queues in dense cores. Your October 2026 [ComputeRasterizer.ts](file:///D:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox/src/core/ComputeRasterizer.ts) already moved to the right paradigm!
+1. **Why WGSL Compute Splatting Beats Hardware Instancing by 10x–100x (Schütz et al., HPG 2022):** Hardware triangle/quad instancing (`Scatterplot.ts`) always rasterizes **2×2 pixel quads** for derivative math, wasting **75% of fragment lanes** on sub-pixel points and stalling ROP blend queues in dense cores. Your October 2026 [ComputeRasterizer.ts](https://github.com/kai-erlenbusch/deepgraph/blob/main/src/core/ComputeRasterizer.ts) already moved to the right paradigm!
 2. **Next-Gen WebGPU Capabilities Available Now (`atomic-vec2u-min-max` & `subgroups`):**
    - W3C WebGPU standardized **`atomic-vec2u-min-max`** ([ChromeStatus 5138136270536704](https://chromestatus.com/feature/5138136270536704), Dawn / Chrome & Edge 157+), providing native 64-bit `atomic<vec2<u32>>` (`atomicStoreMin`/`Max`) for **single-pass exact front-most `row_id` picking and depth-buffered point clouds** (with a clean 32-bit packed `depth_u12 | slot_u8 | row_u12` fallback where unavailable).
    - **`enable subgroups;`** (`subgroupAdd`) pre-aggregates nearby/identical pixel hits inside SIMD warps *before* touching global L2 atomics, cutting Galactic Center atomic contention by **10x–32x**.
-   - **Fixed-Budget Arena `GPUBuffer` Pool:** Replacing Three.js per-mesh `InstancedBufferAttribute` objects with a standalone `GPUBuffer` slab allocator in `ComputeRasterizer` permanently severs the fragile `three@0.172.0` private `renderer.backend` coupling ([WebGPUAdapter.ts](file:///D:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox/src/WebGPUAdapter.ts)) and eliminates the 2+ GB shadow `Float32Array` waste found in Audit **F-08**.
+   - **Fixed-Budget Arena `GPUBuffer` Pool:** Replacing Three.js per-mesh `InstancedBufferAttribute` objects with a standalone `GPUBuffer` slab allocator in `ComputeRasterizer` permanently severs the fragile `three@0.172.0` private `renderer.backend` coupling (`WebGPUAdapter.ts`) and eliminates the 2+ GB shadow `Float32Array` waste found in Audit **F-08**.
 
 ---
 
@@ -111,7 +111,7 @@ Regardless of how you choose to license the upper viewer/studio product, **decou
 
 ## 5. Recommended Sequenced Revival Roadmap
 
-Combining the architectural foundations with all **P0** and **P1** findings from [comprehensive_code_review_audit.md](file:///C:/Users/erlen/.gemini/antigravity/brain/e91adbce-084e-445b-98b1-a434c428c86d/comprehensive_code_review_audit.md), here is the recommended execution sequence:
+Combining the architectural foundations with all **P0** and **P1** findings from `comprehensive_code_review_audit.md`, here is the recommended execution sequence:
 
 ```mermaid
 flowchart TD

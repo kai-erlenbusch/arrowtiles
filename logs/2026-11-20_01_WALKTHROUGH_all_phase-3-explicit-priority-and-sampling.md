@@ -13,20 +13,20 @@ conversation_id: e91adbce-084e-445b-98b1-a434c428c86d
 ## 1. Summary of Changes
 
 ### Writer (`duckdb-arrowtiles`)
-- **Portable `SplitMix64` Default Priority ([SPEC.md](file:///D:/exploratory/duckdb-extension/duckdb-arrowtiles/docs/SPEC.md), [lib.rs](file:///D:/exploratory/duckdb-extension/duckdb-arrowtiles/arrowtiles-engine/src/lib.rs), [builder.py](file:///D:/exploratory/duckdb-extension/duckdb-arrowtiles/arrowtiles/builder.py)):**
+- **Portable `SplitMix64` Default Priority ([SPEC.md](../docs/SPEC.md), [lib.rs](../arrowtiles-engine/src/lib.rs), [builder.py](../arrowtiles/builder.py)):**
   - Formalized unsigned 64-bit `splitmix64(row_id, seed)` in `SPEC.md` §6.1 (`0x9E3779B97F4A7C15`, `0xBF58476D1CE4E5B9`, `0x94D049BB133111EB`).
   - Replaced DuckDB's version-dependent `hash(...)` with `_duckdb_splitmix64_sql(...)` evaluated in 128-bit unsigned `UHUGEINT` with `xor(...)` and `& CAST(18446744073709551615 AS UHUGEINT)` wrapping, plus matching `splitmix64_py` in Python and `#[pyfunction] splitmix64_hash` in Rust.
   - Changed `ArrowTilesBuilder.build(..., sort_col: str | None = None)` so omitting `sort_col` defaults to `{"kind": "random", "seed": 42}` everywhere (removing the legacy `"abs_m"` default).
-- **Explicit `--preset gaia` (`phot_g_mean_mag ASC`) & Flexible Input Schema ([builder.py](file:///D:/exploratory/duckdb-extension/duckdb-arrowtiles/arrowtiles/builder.py), [__main__.py](file:///D:/exploratory/duckdb-extension/duckdb-arrowtiles/arrowtiles/__main__.py)):**
+- **Explicit `--preset gaia` (`phot_g_mean_mag ASC`) & Flexible Input Schema ([builder.py](../arrowtiles/builder.py), [__main__.py](../arrowtiles/__main__.py)):**
   - Inspected input Parquet columns via `DESCRIBE` in `build_gaia(...)` so both raw ESA Gaia DR3 names (`phot_g_mean_mag`, `bp_rp`) and local `s3_cache` names (`magnitude`, `bv`) are accepted seamlessly (with `NULL::FLOAT` fallback for omitted optional kinematics columns).
   - Emits canonical `phot_g_mean_mag: Float32` sorted `ASC` (`view.sizeField = "phot_g_mean_mag"`) and forwards `sampling`, `grid_size`, `allow_oversize_leaves`, and `custom_config` from `python -m arrowtiles build --preset gaia`.
-- **Samples & `⛔ D7` Comparison Pair ([build_samples.py](file:///D:/exploratory/duckdb-extension/duckdb-arrowtiles/scripts/build_samples.py)):**
+- **Samples & `⛔ D7` Comparison Pair ([build_samples.py](../scripts/build_samples.py)):**
   - Rebuilt `samples/gaia_sample.arrowtiles` (`phot_g_mean_mag ASC`) and `samples/lmsys_sample.arrowtiles` (`SplitMix64(seed=42)`), and added `--build-d7-comparison` to build full `2,835,490`-row `samples/lmsys_d7_even_coverage.arrowtiles` and `samples/lmsys_d7_proportional.arrowtiles`.
 
 ### Viewer (`deepgraph-arrowtiles-sandbox`)
-- **Dual `phot_g_mean_mag` / Legacy `abs_m` Support ([Scatterplot.ts](file:///D:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox/src/Scatterplot.ts), [ComputeRasterizer.ts](file:///D:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox/src/core/ComputeRasterizer.ts), [main.ts](file:///D:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox/src/main.ts)):**
+- **Dual `phot_g_mean_mag` / Legacy `abs_m` Support (`Scatterplot.ts`, [ComputeRasterizer.ts](https://github.com/kai-erlenbusch/deepgraph/blob/main/src/core/ComputeRasterizer.ts), [main.ts](https://github.com/kai-erlenbusch/deepgraph/blob/main/src/main.ts)):**
   - Added `scatterplot.gaiaMagField` (`'phot_g_mean_mag'` when present in schema, else `'abs_m'`) across `getActiveColumns`, `getMaterialSignature`, `createMainMaterial`, `computeSlotMagBins`, `ComputeRasterizer.render`, `gaiaFallbacks`, Sky Lenses 10 & 1, and HR Diagram `yField`.
-- **HUD Priority & Sampling Display + `/samples/` Dev Route ([main.ts](file:///D:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox/src/main.ts), [vite.config.ts](file:///D:/exploratory/duckdb-extension/deepgraph-arrowtiles-sandbox/vite.config.ts)):**
+- **HUD Priority & Sampling Display + `/samples/` Dev Route ([main.ts](https://github.com/kai-erlenbusch/deepgraph/blob/main/src/main.ts), [vite.config.ts](https://github.com/kai-erlenbusch/deepgraph/blob/main/vite.config.ts)):**
   - Added `#tel-pyramid` line in the telemetry HUD displaying active `Priority` & `Sampling` via `.textContent`.
   - Added safe `?file=/...arrowtiles` query param support and `/samples/<name>.arrowtiles` HTTP Range serving from `../duckdb-arrowtiles/samples` (retaining `403` traversal protection).
 
