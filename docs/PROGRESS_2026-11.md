@@ -730,3 +730,17 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
      - **Writer (`arrowtiles`):** PyPI `arrowtiles` + target GitHub URL `https://github.com/kai-erlenbusch/arrowtiles` in `pyproject.toml`, `Cargo.toml`, and `README.md`.
      - **Viewer (`deepgraph` `5786195`):** npm `"name": "deepgraph"` (`"private": true` held pending `⛔ D12c`) + target GitHub URL `https://github.com/kai-erlenbusch/deepgraph` across `package.json`, `package-lock.json`, `scripts/verify_consumer_dts.mjs`, `docs/API.md`, `index.html`, and refreshed `README.md` (with `pydeepgraph` noted for future Python/Jupyter widgets).
      - **Dual Sibling-Folder Resolution:** Updated `vite.config.ts`, `tests/phase8b-hdr-density.spec.ts`, `tests/conftest.py`, `scripts/build_samples.py`, and `scripts/bench/*` to check `arrowtiles` / `deepgraph` first and fall back to `duckdb-arrowtiles` / `deepgraph-arrowtiles-sandbox` seamlessly.
+
+
+## 2026-11-22 — Pre-Release Repo Cleanup, CI Alignment, `AGENTS.md` & `v0.1.0` Documentation Overhaul (`Held at ⛔ D12c`)
+
+- **Done:**
+  1. **Phase A — Repo Cleanup, Disk Organization, MuniLM `logs/` Bootstrap & CI (`4ee4f7d` in `deepgraph`, `fe386af` in `arrowtiles`):**
+     - Deleted stale tracked files (`START_HERE.md` in both repos; `task.md`, `src/assets/*`, `tests/memory-leak.spec.ts`, `.github/workflows/perf-ci.yml` in `deepgraph`; `requirements.txt` and `tests/test_legacy_duckdb_extension.py` in `arrowtiles`).
+     - Split `deepgraph` Playwright scripts into `< 5 MiB` sample-only `npm run test:e2e` and `npm run test:e2e:heavy`, bootstrapped `deepgraph/logs/README.md`, added `[project.optional-dependencies] dev = ["pytest>=8.0"]` in `pyproject.toml`, and added `.github/workflows/ci.yml` (`main` / `master`) in both repos.
+     - Reclaimed `~31.2 GB` of duplicate/unused untracked artifacts (keeping `public/gaia_full.arrowtiles`, `public/lmsys_full.arrowtiles`, `samples/gaia_sample.arrowtiles`, `samples/lmsys_sample.arrowtiles`, `samples/lmsys_full_v01.arrowtiles`, and `samples/lmsys_d7_proportional_25k.arrowtiles`), relocated `archive/` + `research/` to `D:\exploratory\duckdb-extension\archive\`, and moved 27 pre-MuniLM June/July raw logs into `arrowtiles/logs/old/`.
+  2. **Phase B — `AGENTS.md` & `v0.1.0` Documentation Overhaul (`5e07166` in `deepgraph`):**
+     - Added `AGENTS.md` in both repositories (`deepgraph` and `arrowtiles`), rewrote `arrowtiles/README.md` with the 2-stage `run_bucketer` + Rayon Zstd PMTiles v3 architecture + CLI & verified `ArrowTilesReader` Python API docs, and updated `deepgraph/README.md` & `docs/API.md`.
+- **Evidence:**
+  - `arrowtiles` pytest: **`53 passed in 24.55s`** (`0 skipped`); `README.md` Python API `python -c` smoke test: **`README_PYTHON_API_SMOKE_OK`**.
+  - `deepgraph` `typecheck` + `build:lib` + `verify:types` + `build:demo` + `npm run test:e2e` (`Intel xe-lpg iGPU`): **`3 passed in 1.1m`** (`liveDevices = 0`, `liveBytes = 0`).

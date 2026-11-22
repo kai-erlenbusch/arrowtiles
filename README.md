@@ -5,158 +5,168 @@
 [![Rust](https://img.shields.io/badge/Rust-1.80+-blue.svg)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/Python-3.10+-yellow.svg)](https://www.python.org/)
 
-**ArrowTiles** (`pip install arrowtiles`) is a high-performance DuckDB + Rust (`PyO3`) spatial pyramid builder, reader, and validator that packs multi-million to billion-row datasets (such as the 1.8 billion row ESA Gaia DR3 catalogue or 2.84 million LMSys embeddings) into single-file, HTTP Range-streamable **`.arrowtiles` (`v0.1`)** archives (see [`docs/SPEC.md`](docs/SPEC.md)).
+**ArrowTiles** (`pip install arrowtiles`) is a deterministic DuckDB + Rust (`PyO3`) spatial pyramid builder, reference reader, and validator that packs multi-million to billion-row Parquet datasets (such as the **1.8 billion row ESA Gaia DR3 catalogue** or **2.84 million LMSys UMAP embeddings**) into single-file, HTTP Range-streamable **`.arrowtiles` (`v0.1`)** archives.
 
-For client-side WebGPU rendering, GPU picking, and interactive exploration of `.arrowtiles` archives in the browser, see the companion **[deepgraph](https://github.com/kai-erlenbusch/deepgraph)** engine (`npm install deepgraph`).
+- **Wire-Format Specification:** [`docs/SPEC.md`](docs/SPEC.md)
+- **Range & Decode Benchmarks vs. Parquet:** [`docs/BENCHMARK_parquet_vs_arrowtiles.md`](docs/BENCHMARK_parquet_vs_arrowtiles.md)
+- **Companion WebGPU Viewer Engine:** **[deepgraph](https://github.com/kai-erlenbusch/deepgraph)** (`npm install deepgraph`)
 
-Because statically compiling a DuckDB extension via Rust on Windows can cause MSVC standard library conflicts, this pipeline uses a **Native Python Extension (PyO3)** architecture. Python orchestrates DuckDB's out-of-core sorting engine, while the `arrowtiles_core` Rust module is directly imported into Python to handle CPU-intensive spatial math and parallel Zstandard compression with zero-overhead FFI bindings.
+---
 
-## 🚀 Performance
-The 2-pass IPC architecture completely bypasses FFI (Foreign Function Interface) memory leaks and maximizes CPU utilization. It is capable of processing **1.35 billion rows (~25 GB raw Parquet)** on consumer hardware (64GB RAM, 24-core CPU) in approximately **50 minutes**, yielding a tightly compressed 15.8 GB `.arrowtiles` archive optimized for WebGPU HTTP Range Requests.
+## Why `.arrowtiles`? ("PMTiles for Point Clouds & Embeddings")
 
-## 🏗️ The 2-Pass Architecture
+Traditional multiscale scatterplots write hundreds of thousands of tiny `.feather` or `.bin` files (exhausting S3 PUT budgets and browser HTTP connection pools), while raw remote Parquet files require fetching wide multi-megabyte row groups for coarse overviews.
 
-To prevent out-of-memory (OOM) crashes and preserve 60 FPS rendering in the frontend browser, the pipeline strictly separates spatial indexing from chunk compression:
+`.arrowtiles` packs a multiscale priority quadtree of Zstd-compressed, schema-stripped **Apache Arrow IPC `RecordBatch`es** inside a standard **PMTiles v3** single-file container:
+- **Single-file CDN/S3 deployment:** Zero server logic—any static bucket or HTTP Range server streams tiles directly to WebGPU workers.
+- **Byte-for-byte deterministic builds:** Rebuilding the same Parquet input produces an identical SHA-256 `.arrowtiles` archive across runs and `--resume` checkpoints.
+- **Zero-copy GPU column alignment:** Coordinates quantize to `x_u16` / `y_u16` per tile while categorical dictionaries (`UInt8`/`UInt16`) and global column `min`/`max` statistics live in the single PMTiles JSON header.
+
+---
+
+## Architecture: Deterministic 2-Pass Pipeline
 
 ```mermaid
-graph TD
-    A[(Raw Parquet)] -->|Global Sort by Magnitude| DDB1(Python + DuckDB)
-    
-    subgraph "Pass 1: Bucketing"
-        DDB1 -->|IPC Stream| RUST1[Rust Engine: Assign Z-Levels & Hilbert]
-        RUST1 -->|IPC Stream| DDB1
-        DDB1 -->|Export| TEMP[(Temporary Parquet)]
+flowchart TD
+    A[("Input Parquet File(s) / Glob")] -->|"Single-Pass SQL Preflight + Priority Order"| B["DuckDB Out-of-Core Stream"]
+    subgraph "Pass 1: Deterministic 2-Stage Bucketing (Rust PyO3)"
+        B -->|"Arrow C Data Interface"| C["Stage A (Rayon): Stateless 20-bit Hilbert & Cell Coords"]
+        C --> D["Stage B (Sequential): Priority Slot Claiming (even_coverage / proportional)"]
+        D --> E[("Per-Zoom Partitions: partitions/z_00..z_NN.parquet + SHA-256 manifest.json")]
     end
-    
-    subgraph "Pass 2: Packing"
-        TEMP -->|Global Sort by Spatial Index| DDB2(Python + DuckDB)
-        DDB2 -->|IPC Stream| RUST2[Rust Engine: Zstd Compress & Pack]
+    subgraph "Pass 2: Per-Zoom Hilbert Sort & Parallel Zstd Packing"
+        E -->|"Per-Zoom Hilbert Order"| F["DuckDB Per-Level Stream"]
+        F -->|"Arrow C Data Interface"| G["Rust Rayon Pool: Strip Arrow Schema + Zstd Compress"]
+        G --> H[("Single .arrowtiles Archive (PMTiles v3)")]
     end
-    
-    RUST2 --> S3[(.arrowtiles Archive)]
 ```
 
-### Pass 1: Global Magnitude Bucketing
-1. DuckDB reads the raw dataset and sorts it globally by absolute magnitude (brightness) in ascending order.
-2. The ordered rows are piped to the Rust engine, which uses a density map to assign a Quadtree Z-level and a spatial Hilbert index to each point.
-3. The enriched rows are streamed back to DuckDB and saved as a temporary Parquet file (`duckdb_temp/bucketed_temp.parquet`).
-
-### Pass 2: Spatial IPC Packing
-1. DuckDB reads the temporary Parquet file and sorts it globally by `Z-Level` and `Hilbert Index`.
-2. The perfectly ordered spatial data is piped to the Rust engine.
-3. Rust strips the redundant Arrow IPC schema headers (saving ~12% archive size), parallelizes Zstd compression across all CPU cores using Rayon, and limits chunks to 500k rows to prevent client-side memory spikes.
-4. Rust injects the base64-encoded Arrow schema into the final PMTiles JSON metadata.
+1. **Single-Pass SQL Preflight (`arrowtiles/builder.py`):** DuckDB computes global bounds, row counts, `id_col` uniqueness, numeric `min`/`max` stats, and categorical dictionaries in one scan (automatically dropping high-cardinality free-text columns `distinct > 4,096` unless explicitly requested in `columns`).
+2. **Pass 1 — Zero-Atomic 2-Stage Bucketer (`arrowtiles-engine/src/lib.rs`):** DuckDB streams rows ordered by `(priority_key, row_id ASC)`—either an explicit `sort_col` (e.g. `phot_g_mean_mag ASC`) or portable `SplitMix64(row_id, seed)`—into Rust via the Arrow C Data Interface. Stage A computes `fast_hilbert` coordinates across all CPU cores; Stage B assigns zoom levels deterministically without atomic contention and writes per-zoom Parquet partitions (`z_00.parquet .. z_NN.parquet`) plus a cryptographic `manifest.json` (`--resume`).
+3. **Pass 2 — Per-Zoom Packing:** Each zoom partition is sorted in memory by `(tile_id, hilbert_20, priority_ord)`, stripped of redundant per-tile Arrow IPC schema headers (stored once as base64 `arrow_schema` in metadata), Zstd-compressed in parallel via Rayon, and written into a PMTiles v3 archive.
 
 ---
 
-## 🛠️ Building & Setup
+## Installation & Source Build
 
-### 1. Prerequisites
-- **Python 3.10+**
-- **Rust Toolchain** (cargo)
-- **DuckDB CLI** (or Python package)
-
-### 2. Python Environment
-Install the required python orchestration dependencies (`pyarrow`, `duckdb`, `tqdm`):
 ```bash
-pip install -r requirements.txt
+pip install arrowtiles
 ```
 
-### 3. DuckDB Extensions
-This pipeline relies on the community `lindel` extension for Hilbert curve generation. You can install it directly inside your DuckDB environment:
-```sql
-INSTALL lindel FROM community;
-LOAD lindel;
-```
+### Building from Source (Python 3.10+ & Rust 1.80+)
 
-### 4. Build the Rust Engine (PyO3)
-The high-performance Rust engine is bound to Python via PyO3. You must compile the extension in release mode using `maturin` to achieve acceptable throughput:
 ```bash
-pip install maturin
-cd arrowtiles-engine
+git clone https://github.com/kai-erlenbusch/arrowtiles.git
+cd arrowtiles
+
+python -m venv .venv
+# Windows: .venv\Scripts\activate   |   Linux/macOS: source .venv/bin/activate
+
+pip install "maturin>=1.4,<2.0"
+pip install -e ".[dev]" --no-build-isolation
 maturin develop --release
+
+# Run the test suite (53 tests):
+pytest -v
 ```
-*(This compiles the Rust engine and installs it into your active Python environment as `arrowtiles_core`)*
 
 ---
 
-## ⚙️ Usage & Configuration
-
-Once the package and Rust extension are installed (`maturin develop --release`), run the `arrowtiles` CLI (or import `build_generic` / `build_gaia` in Python):
+## CLI Usage (`arrowtiles` / `python -m arrowtiles`)
 
 ```bash
-# Generic 2D embedding / point cloud (selects active visual columns for fast streaming):
-python -m arrowtiles build \
+# 1. Generic 2D embedding / point cloud (select active visual columns for fast overview streaming):
+arrowtiles build \
   --input "embeddings.parquet" \
   --output "embeddings.arrowtiles" \
-  --x-col x --y-col y \
+  --x-col x_umap --y-col y_umap \
   --columns model clusters_14 num_of_tokens \
   --categorical-cols clusters_14
 
-# ESA Gaia DR3 Hammer sky preset (phot_g_mean_mag ASC + even_coverage):
-python -m arrowtiles build \
+# 2. ESA Gaia DR3 Hammer sky preset (phot_g_mean_mag ASC + even_coverage, 100k tile capacity):
+arrowtiles build \
   --preset gaia \
-  --input "path/to/gaia_batches/*.parquet" \
+  --input "gaia_batches/*.parquet" \
   --output "gaia.arrowtiles"
 
-# Validate an .arrowtiles v0.1 archive:
-python -m arrowtiles validate "embeddings.arrowtiles"
+# 3. Validate an .arrowtiles archive against SPEC.md v0.1 (human report or --json):
+arrowtiles validate "embeddings.arrowtiles"
+
+# 4. Inspect PMTiles header, Arrow schema, and JSON metadata:
+arrowtiles inspect "embeddings.arrowtiles"
 ```
 
-> **Important — Wide Tables & `--columns`:** Each `.arrowtiles` v0.1 tile packs all retained columns into a single contiguous Arrow IPC `RecordBatch` so browsers can stream an entire tile in **1 HTTP Range request**. On wide 30+-column tables, always pass **`--columns <col1> <col2> ...`** (or `columns=[...]` in `build_generic`) to retain only the columns needed for visual encoding. Keeping `Z=0..2` overview payload below `10 MiB` avoids multi-second WAN downloads (e.g. `1.3 s` projected vs. `7.2 s` unprojected on a `50 Mbps` connection). High-cardinality free-text columns (`distinct > 4,096`) are automatically dropped unless explicitly listed in `--columns`, and builds automatically emit a warning whenever `Z=0..2` overview bytes exceed `10 MiB`.
+> **Wide Tables & `--columns`:** Each `.arrowtiles` `v0.1` tile packs all retained columns into one Arrow IPC `RecordBatch` so browsers fetch an entire tile in **1 HTTP Range request**. On wide 30+-column tables, pass **`--columns <col1> <col2> ...`** (space- or comma-separated) to retain only the columns needed for visual encoding and keep `Z=0..2` overview bytes below `10 MiB`.
 
-### Key CLI Arguments (`python -m arrowtiles build`)
+### Key `arrowtiles build` Options
+
 | Argument | Description |
 | :--- | :--- |
-| `--input` | (Required) Path or glob pattern to input Parquet file(s). |
-| `--output` | (Required) Output `.arrowtiles` archive path. |
-| `--x-col`, `--y-col` | Source coordinate columns (default `x`, `y` in generic mode). |
-| `--columns` | **Recommended on wide tables:** Explicit list of payload columns to retain in tiles. |
-| `--categorical-cols` | Force discrete integer/string columns (e.g. `clusters_14`) to encode as `UInt8`/`UInt16` categories. |
+| `--input` | *(Required)* Path or glob pattern to input Parquet file(s). |
+| `--output` | *(Required)* Output `.arrowtiles` archive path. |
+| `--x-col`, `--y-col` | Source coordinate columns (required for generic builds). |
+| `--columns` | Space- or comma-separated subset of payload columns to retain in tiles. |
+| `--categorical-cols` | Space- or comma-separated columns (including integer cluster IDs) to dictionary-encode as `UInt8`/`UInt16`. |
 | `--preset gaia` | Astronomical Galactic Hammer projection (`phot_g_mean_mag ASC`, `even_coverage`, `100,000` tile capacity). |
-| `--sampling` | `proportional` (generic default, `25,000` tile capacity) or `even_coverage` (`G×G` sub-grid at `Z<=6`). |
+| `--sampling` | `proportional` (generic default, `25,000` capacity) or `even_coverage` (`G×G` sub-grid occupancy at `Z <= 6`). |
 | `--tile-capacity` | Max rows per non-leaf tile (`25,000` generic default; `100,000` on `--preset gaia`). |
-| `--sort-col`, `--sort-dir` | Deterministic column priority (`ASC`/`DESC`); defaults to portable `SplitMix64(row_id, seed)`. |
-| `--id-col` | Optional unique unsigned integer row identifier column (defaults to dense `0 .. N-1` Parquet offset). |
-| `--temp-dir` | Directory for intermediate Pass 1 Z-partitions (`--resume` reuses verified SHA-256 manifests). |
-
-### Input Data Requirements
-The pipeline is a **generalized data visualizer**. When running the `build_generic` pipeline, DuckDB automatically inspects your dataset's schema, identifies all numeric columns, and runs global `MIN()` and `MAX()` aggregations to establish automatic bounding stats. 
-
-These stats are serialized into a custom JSON metadata block and injected directly into the `.arrowtiles` archive, allowing frontend GUIs to dynamically generate sliders and coordinate scales for *any* dataset.
-
-**Gaia Baseline Mode**: By default, the engine includes a specialized projection mode for the ESA Gaia dataset, expecting `ra`, `dec`, and `magnitude` columns for advanced Galactic Hammer projections.
+| `--max-zoom` | Nominal maximum quadtree zoom level before overflow spilling (default: `10`). |
+| `--sort-col`, `--sort-dir` | Explicit priority column (`ASC` or `DESC`); defaults to deterministic `SplitMix64(row_id, seed)`. |
+| `--seed` | Random seed for default `SplitMix64` priority ordering (default: `42`). |
+| `--id-col` | Optional unique unsigned integer row ID column (defaults to dense `0 .. N-1` Parquet offset). |
+| `--keep-source-xy` | Retain raw `Float32`/`Float64` source X/Y columns alongside quantized `x_u16`/`y_u16`. |
+| `--temp-dir`, `--resume` | Persist Pass 1 zoom partitions in `--temp-dir` and reuse verified SHA-256 `manifest.json` on `--resume`. |
 
 ---
 
-## 🗺️ Future Roadmap
+## Python API Reference
 
-While the core pipeline successfully processes billion-row datasets, there are several major architectural leaps planned to transform ArrowTiles from a sandbox tool into a world-class spatial ecosystem.
+```python
+from arrowtiles import ArrowTilesReader, build_gaia, build_generic, validate_file
 
-### Phase 1: Pipeline & Format Extensions
-- **✅ Completed (Z-Level Partitioning & Deterministic 2-Stage Bucketer):** Pass 1 partitions data directly into per-zoom Parquet files (`z_00.parquet .. z_NN.parquet`) with SHA-256 `--resume` manifests and zero-atomic deterministic `(priority_key, row_id ASC)` assignment.
-- **Column Groups & Multi-Layer Streaming (`v0.2+`):** Partitioning wide scientific tables into a core geometry group plus on-demand attribute column groups inside a single `.arrowtiles` archive via `required_features`.
+# 1. Build a v0.1 archive from Parquet:
+summary = build_generic(
+    input_parquet="embeddings.parquet",
+    output_path="embeddings.arrowtiles",
+    x_col="x_umap",
+    y_col="y_umap",
+    columns=["model", "num_of_tokens"],
+    sampling="proportional",
+)
 
-### Phase 2: Open-Source Ecosystem Wrappers
-To make the pipeline accessible to the broader data science and web development communities, we plan to wrap the unified Rust engine using industry-standard FFI bindings:
-- **✅ Completed (PyO3 + Maturin):** The Rust engine is now natively bound to Python, allowing data scientists to generate tiles directly in Jupyter Notebooks without subprocess overhead.
-- **Node.js CLI (NAPI-RS):** Publish to NPM so web developers can quickly generate test tiles for WebGPU frontends using a simple terminal command: `npx arrowtiles build <input> <output>`.
+# 2. Validate SPEC.md v0.1 invariants:
+report = validate_file("embeddings.arrowtiles")
+assert report.ok, report.errors
 
-### Phase 3: The C++ DuckDB Extension
-Once the byte-offset logic, Quadtree math, and schema-stripping algorithms are mathematically perfected and proven in safe Rust, the ultimate goal is to port the logic to C++. By building a native loadable DuckDB extension, anyone in the world will be able to generate WebGPU-ready tiles using standard SQL:
+# 3. Inspect metadata and read decoded pyarrow.Table tiles:
+with ArrowTilesReader("embeddings.arrowtiles") as reader:
+    header = reader.header()       # PMTiles v3 header dict (max_zoom, num_addressed_tiles, ...)
+    meta = reader.metadata()       # ArrowTiles v0.1 JSON metadata (bounds, stats, priority, ...)
+    schema = reader.schema()       # pyarrow.Schema of stored tile columns
+    coords = reader.list_tiles()   # [(z, x, y), ...] non-empty tile coordinates
 
-```sql
-INSTALL arrowtiles;
-LOAD arrowtiles;
-COPY (
-    SELECT ra, dec, parallax, phot_g_mean_mag 
-    FROM 's3://esa-gaia/**/*.parquet'
-) TO 'gaia.arrowtiles' (FORMAT ARROWTILES, MAX_CAPACITY 100000);
+    # Read root tile (0, 0, 0) with dequantized (x_decoded, y_decoded) & string category labels:
+    root_table = reader.read_tile(0, 0, 0, decode_coords=True, decode_categories=True)
+
+    # Stream all non-empty tiles in PMTiles Hilbert order:
+    for (z, x, y), tile_table in reader.iter_tiles(decode_coords=False):
+        pass
 ```
 
+For contributor invariants and wire-format rules, see [`AGENTS.md`](AGENTS.md) and [`docs/SPEC.md`](docs/SPEC.md).
+
 ---
 
-## 📄 Licensing
+## Roadmap
+
+- **2.5D Extrusion & 3D Octree Tiling (`tiling: "octree-3d"`):** Extending the 53-bit PMTiles `tile_id` curve and `xyz_u16` quantization to volumetric 3D point clouds while `v0.1` readers cleanly gate on `"tiling"` and `"required_features"`.
+- **Single-File Column Groups (`v0.2+`):** Partitioning wide scientific tables into a core geometry group plus on-demand attribute column groups inside a single `.arrowtiles` archive.
+- **Python / Jupyter Integration (`pydeepgraph`):** Interactive `anywidget` embedding powered by `deepgraph` and `ArrowTilesReader`.
+- **Loadable DuckDB Extension:** Native `COPY (...) TO 'out.arrowtiles' (FORMAT ARROWTILES)` SQL sink.
+
+---
+
+## Licensing
 
 Licensed under the **Apache License 2.0**. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
 
