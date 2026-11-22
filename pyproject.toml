@@ -11,6 +11,7 @@ license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
 keywords = ["arrowtiles", "pmtiles", "apache-arrow", "duckdb", "webgpu", "quadtree", "visualization"]
 dependencies = [
+    "cffi>=1.15.0",
     "duckdb>=1.0.0",
     "pmtiles>=3.4.0",
     "pyarrow>=16.0.0",
