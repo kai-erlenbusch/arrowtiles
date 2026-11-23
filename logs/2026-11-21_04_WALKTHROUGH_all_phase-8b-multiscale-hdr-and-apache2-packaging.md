@@ -12,12 +12,12 @@ conversation_id: e91adbce-084e-445b-98b1-a434c428c86d
 
 ## 1. Summary of 3-Commit Execution (`revival/2026-11-wip`, Unpushed)
 
-1. **Commit 1 (`54e0c2a` writer / `9491f7e` viewer) — `D12b` Apache-2.0 Licensing & `SPEC.md` `v0.1` `"tiling": "quadtree-2d"`:**
-   - Added standard Apache License 2.0 `LICENSE` and `NOTICE` (`Copyright 2026 Robert Erlenbusch`) at the root of both `duckdb-arrowtiles` and `deepgraph-arrowtiles-sandbox` (zero per-file license headers).
-   - Configured `Apache-2.0` metadata in `pyproject.toml`, `arrowtiles-engine/Cargo.toml`, `package.json` (`"files": ["dist", "docs/API.md", "LICENSE", "NOTICE"]`, keeping `"private": true`), `docs/SPEC.md`, and both `README.md` `"## 📄 Licensing"` sections (preserving ESA/Gaia/DPAC and LMSys-Chat-1M data attributions).
+1. **Commit 1 (`54e0c2a` writer) — `D12b` Licensing & `SPEC.md` `v0.1` `"tiling": "quadtree-2d"` *(subsequently amended in `2026-11-22_06` so `arrowtiles` remains `Apache-2.0` while `deepgraph` uses `CC-BY-NC-4.0` + Commercial License)*:**
+   - Added standard Apache License 2.0 `LICENSE` and `NOTICE` (`Copyright 2026 Kai Erlenbusch`) at the root of `arrowtiles` (zero per-file license headers).
+   - Configured `Apache-2.0` metadata in `pyproject.toml`, `arrowtiles-engine/Cargo.toml`, and `docs/SPEC.md` (with `deepgraph` later updated to `CC-BY-NC-4.0` + Commercial License in `package.json`, keeping `"private": true`, and preserving ESA/Gaia/DPAC and LMSys-Chat-1M data attributions).
    - Standardized reserved `"tiling": "quadtree-2d"` in `docs/SPEC.md` (§1 & §6.4), `arrowtiles/builder.py`, `arrowtiles/reader.py`, `arrowtiles/validator.py`, `tests/test_spec_tiling.py` (`52 passed, 1 skipped`), and `DatasetSession.ts` (defaulting omitted `"tiling"` to `"quadtree-2d"` while rejecting unknown present values).
 
-2. **Commit 2 (`c26f4c6` viewer) — Phase 8b Multiscale Zoom-Adaptive Density & Per-Pixel Linear HDR Resolve:**
+2. **Commit 2 (viewer) — Phase 8b Multiscale Zoom-Adaptive Density & Per-Pixel Linear HDR Resolve:**
    - Replaced per-star `three_aces_filmic` + `linear_to_srgb` and `rand255` stochastic skip in Mode 0/3 (`ComputeRasterizer.ts`) with deterministic linear radiometric flux accumulation (`word0` at scale `1.0 = 65536.0`, saturation-gated `< 0x80000000u`) and exact flux-weighted chromaticity (`word1 = Σ(fClamped * tU255)` mapped across active `[u.colorMin, u.colorMax]`, gated on `prevFlux < 16,777,215`, `16,777,215 × 255 = 4,278,190,075 < 2^32`), resolving linear-space Gaia blackbody + ACES filmic + sRGB **once per screen pixel** in `fs_main`.
    - Added continuous unclamped `Renderer.logZoom`, `pointSize * pow(2.0, logZoom * zoomBalance)` point sizing (`pointSize = 1.0`, `zoomBalance = 0.22`), relaxed deep-zoom `maxMagCutoff` (`22.0`, `bin = 15`), exact `Float64` `RTC` viewport-intersection density estimation with stationary-frame bit-exact exposure lock, continuous Mode 1 `refCount` (`96.0 → 1.15`), expanded `PickingLayer` hit windows, and public `pointSize` / `zoomBalance` / `pointOpacity` / `exposure` options + `ControlsPanel` sliders.
 
@@ -30,7 +30,7 @@ conversation_id: e91adbce-084e-445b-98b1-a434c428c86d
 
 ## 2. Quantitative Acceptance Matrix (`Intel xe-lpg iGPU`, `0 B` on Discrete RTX 5090)
 
-| Check / View | Metric | Before (`9491f7e`) | After (`Phase 8b / 8c`) | Result |
+| Check / View | Metric | Before (`Pre-8b`) | After (`Phase 8b / 8c`) | Result |
 | :--- | :--- | :---: | :---: | :---: |
 | **Mode 0 Shimmer** (`gaia_sample`) | Changed pixels across 2 frames | `0 / 178,928` (`0.0000%`) | **`0 / 171,864` (`0.0000%`, `maxDelta = 0`)** | **PASS** |
 | **Galactic Core `Z=2`** (`zoom = 1.8`, `4.33M` pts) | FPS / Mean lit / `p99` / Pure white | `101.9 fps` / `106.99` / `194` / `0.00%` | **`104.7 fps` (`+2.7%`)** / `117.44` / `169` / **`0.00%`** | **PASS** |

@@ -7,6 +7,7 @@ name = "arrowtiles"
 version = "0.1.0"
 description = "DuckDB + Rust (PyO3) ArrowTiles v0.1 spatial pyramid builder, reader, and validator"
 readme = "README.md"
+authors = [{ name = "Kai Erlenbusch", email = "erlenbusch@uchicago.edu" }]
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
 keywords = ["arrowtiles", "pmtiles", "apache-arrow", "duckdb", "webgpu", "quadtree", "visualization"]

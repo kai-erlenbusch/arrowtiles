@@ -17,7 +17,7 @@ conversation_id: e91adbce-084e-445b-98b1-a434c428c86d
    - Remove `deepgraph/public/gaia.arrowtiles` (`30.3 GB` duplicate), `public/test.arrowtiles`, `public/test_categorical.arrowtiles`, and ephemeral caches while preserving `public/gaia_full.arrowtiles` (`31.0 GB`) and `public/lmsys_full.arrowtiles` (`841 MB`).
    - In `arrowtiles/samples/`, preserve `gaia_sample.arrowtiles`, `lmsys_sample.arrowtiles`, `lmsys_full_v01.arrowtiles`, and `lmsys_d7_proportional_25k.arrowtiles` (used by `gpu-vram-lifecycle.spec.ts`, `verify_phase5b.mjs`, and `build_phase4_datasets.py`), removing only the 3 unused `lmsys_d7_*` variants (`~883 MB`).
    - Move `deepgraph/{archive,research}` and `arrowtiles/archive` to `<workspace>/archive/`, and move loose June/July raw logs in `arrowtiles/logs/` into `arrowtiles/logs/old/`.
-3. **Phase A (Cleanup, MuniLM `logs/` Bootstrap & CI):**
+3. **Phase A (Cleanup, Structured `logs/` Bootstrap & CI):**
    - `deepgraph`: Delete `task.md`, `START_HERE.md`, `src/assets/*`, `tests/memory-leak.spec.ts`, and `.github/workflows/perf-ci.yml`; split `npm run test:e2e` vs `npm run test:e2e:heavy`; bootstrap `logs/README.md`; add Node 22 `.github/workflows/ci.yml` (`main`/`master`).
    - `arrowtiles`: Delete `requirements.txt`, `START_HERE.md`, and `tests/test_legacy_duckdb_extension.py`; remove `!requirements.txt` from `.gitignore`; add `[project.optional-dependencies] dev = ["pytest>=8.0"]`; add Rust + Python `.github/workflows/ci.yml` (`main`/`master`).
 4. **Phase B (`AGENTS.md` & `v0.1.0` Documentation):**

@@ -166,12 +166,12 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
   4. `logs/` is gitignored, so the audit and research files this log cites are not versioned. Should reviews live in tracked `docs/reviews/` instead?
 
 
-## 2026-11-19 — Phase 0 (finish): cleanup, dev-server hardening, MuniLM logs & portable tests
+## 2026-11-19 — Phase 0 (finish): cleanup, dev-server hardening, structured logs & portable tests
 
 - **Done:**
   1. **Restored `docs/PROGRESS_2026-11.md` (`D1`):** Ran `git checkout -- docs/PROGRESS_2026-11.md` to restore the 117-line independent verification and P1–P6 baseline probe record from commit `8c04c98` (verified 166 lines prior to appending this entry).
   2. **Archived stale root binary (`D2`):** Moved `<workspace>/duckdb-arrowtiles/arrowtiles_core.pyd` (`2026-07-22`) to `archive/arrowtiles_core_2026-07-22.pyd` so `sys.path[0]` can no longer shadow `.venv` builds.
-  3. **Configured MuniLM `logs/` tracking (`Patch 5`):** Updated `duckdb-arrowtiles/.gitignore` with surgical rules (`logs/*`, `!logs/README.md`, `!logs/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]_*.md`), persisted `2026-11-19_03_AUDIT_all_comprehensive-code-review-and-archaeology.md`, `2026-11-19_04_RESEARCH_all_ecosystem-format-duckdb15-and-licensing.md`, and the merged consensus plan `2026-11-19_05_PLAN_all_merged-consensus-revival-plan.md`, and updated `logs/README.md`. Verified `0` historic raw transcript files are staged.
+  3. **Configured chronological `logs/` tracking (`Patch 5`):** Updated `duckdb-arrowtiles/.gitignore` with surgical rules (`logs/*`, `!logs/README.md`, `!logs/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]_*.md`), persisted `2026-11-19_03_AUDIT_all_comprehensive-code-review-and-archaeology.md`, `2026-11-19_04_RESEARCH_all_ecosystem-format-duckdb15-and-licensing.md`, and the merged consensus plan `2026-11-19_05_PLAN_all_merged-consensus-revival-plan.md`, and updated `logs/README.md`. Verified `0` historic raw transcript files are staged.
   4. **Hardened Vite range middleware (`deepgraph-arrowtiles-sandbox/vite.config.ts`):** Bound `server.host` to `'127.0.0.1'` by default, wrapped `decodeURIComponent` in `try/catch` (`400`), enforced directory containment via `path.relative` before `Range` evaluation (`403`), capped single range reads to `16 MiB` (`16,777,216` bytes), and revalidated `stat.size` + `stat.mtimeMs` on cached file descriptors.
   5. **Made writer `pytest` suite portable (`duckdb-arrowtiles/tests/`):** Replaced hardcoded `D:\` paths with workspace-relative fixtures + env-var overrides (`ARROWTILES_*`) that cleanly `pytest.skip` when absent, added a cross-Python 3.10–3.14 `zstd_decompress` helper (`compression.zstd` -> `pyarrow` streaming Zstd fallback), and asserted in `conftest.py` (plus explicit `test_arrowtiles_core_loaded_from_venv`) that `arrowtiles_core.__file__` resolves inside `.venv`.
 
@@ -659,14 +659,14 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
   3. **Remote Push & Registry Publish (`⛔ D12c`):** Ready to push `revival/2026-11-wip` to GitHub / open PRs, and when would you like to flip `"private": false` for `npm publish` / `maturin publish`?
 
 
-## 2026-11-21 — `D12b` Apache-2.0 Licensing, `SPEC.md` `v0.1` `"tiling": "quadtree-2d"`, Phase 8b Multiscale Zoom-Adaptive Density & Per-Pixel Linear HDR Resolve, and Phase 8c Bundler/Standalone Split + `AbortSignal` (`3` Commits — Held at `⛔ D12a` / `D12c`)
+## 2026-11-21 — `D12b` Licensing, `SPEC.md` `v0.1` `"tiling": "quadtree-2d"`, Phase 8b Multiscale Zoom-Adaptive Density & Per-Pixel Linear HDR Resolve, and Phase 8c Bundler/Standalone Split + `AbortSignal` (`3` Commits — Held at `⛔ D12a` / `D12c`)
 
 - **Done:**
-  1. **Commit 1 (`54e0c2a` in `duckdb-arrowtiles`, `9491f7e` in `deepgraph-arrowtiles-sandbox`) — `D12b` Apache-2.0 Licensing + `SPEC.md` `v0.1` Reserved `"tiling": "quadtree-2d"`:**
-     - Added standard unmodified Apache License 2.0 `LICENSE` and `NOTICE` (`Copyright 2026 Robert Erlenbusch`) at the root of both `duckdb-arrowtiles` and `deepgraph-arrowtiles-sandbox` (zero per-file license headers).
-     - Set `license = { text = "Apache-2.0" }` in `duckdb-arrowtiles/pyproject.toml`, `license = "Apache-2.0"` in `duckdb-arrowtiles/arrowtiles-engine/Cargo.toml`, and `"license": "Apache-2.0"` + `"files": ["dist", "docs/API.md", "LICENSE", "NOTICE"]` in `deepgraph-arrowtiles-sandbox/package.json` (preserving `"private": true` pending `⛔ D12a`/`D12c`), updated both `README.md` `"## 📄 Licensing"` sections (with ESA/Gaia/DPAC & LMSys-Chat-1M data attribution), and added a one-line Apache-2.0 header to `docs/SPEC.md`.
+  1. **Commit 1 (`54e0c2a` in `duckdb-arrowtiles`) — `D12b` Licensing + `SPEC.md` `v0.1` Reserved `"tiling": "quadtree-2d"` *(amended in `2026-11-22_06` so `arrowtiles` stays `Apache-2.0` while `deepgraph` uses `CC-BY-NC-4.0` + Commercial License)*:**
+     - Added standard unmodified Apache License 2.0 `LICENSE` and `NOTICE` (`Copyright 2026 Kai Erlenbusch`) at the root of `duckdb-arrowtiles` (zero per-file license headers).
+     - Set `license = { text = "Apache-2.0" }` in `duckdb-arrowtiles/pyproject.toml`, `license = "Apache-2.0"` in `duckdb-arrowtiles/arrowtiles-engine/Cargo.toml`, and `"files": ["dist", "docs/API.md", "LICENSE", "NOTICE"]` in `deepgraph` `package.json` (subsequently set to `"license": "CC-BY-NC-4.0"`, preserving `"private": true` pending `⛔ D12c`), updated both `README.md` Licensing sections (with ESA/Gaia/DPAC & LMSys-Chat-1M data attribution), and added a one-line Apache-2.0 header to `docs/SPEC.md`.
      - Added reserved `"tiling": "quadtree-2d"` to `docs/SPEC.md` (§1 & §6.4), `arrowtiles/builder.py` (`SPEC_TILING = "quadtree-2d"`, `RESERVED_METADATA_KEYS`), `arrowtiles/reader.py`, `arrowtiles/validator.py`, `tests/test_spec_tiling.py`, and `deepgraph-arrowtiles-sandbox/src/lib/DatasetSession.ts` + `src/lib/types.ts` (defaulting omitted `"tiling"` to `"quadtree-2d"` for backwards compatibility while rejecting unknown present values so future `"octree-3d"` archives fail fast in `v0.1` viewers).
-  2. **Commit 2 (`c26f4c6` in `deepgraph-arrowtiles-sandbox`) — Phase 8b Multiscale Zoom-Adaptive Density & Zero-Shimmer Per-Pixel Linear HDR Resolve:**
+  2. **Commit 2 (viewer) — Phase 8b Multiscale Zoom-Adaptive Density & Zero-Shimmer Per-Pixel Linear HDR Resolve:**
      - **Zero-Shimmer Linear HDR Mode 0/3 Accumulation (`src/core/ComputeRasterizer.ts`):** Removed per-star `three_aces_filmic` (`-0.000090537` toe) + `linear_to_srgb` and `rand255` stochastic skip from `splat_optical_pixel`. Accumulates deterministic linear radiometric flux (`word0` at scale `1.0 = 65536.0`, saturation-gated `< 0x80000000u`) and exact flux-weighted color scalar sum (`word1 = Σ(fClamped * tU255)` with `tU255 ∈ [0..255]` mapped across active `[u.colorMin, u.colorMax]`, gated on the exact same `fluxU` scale at `prevFlux < 16777215u`, `16,777,215 × 255 = 4,278,190,075 < 2^32`), evaluating the linear Gaia blackbody curve + ACES filmic + sRGB **once per screen pixel** in `fs_main`.
      - **Continuous Unclamped `logZoom` Sizing, Faint-Star Deep-Zoom Reveal, Pan-Stable Auto-Exposure & Mode 1 `refCount` (`Renderer.ts`, `TileGpuStore.ts`, `ComputeRasterizer.ts`, `PickingLayer.ts`):** Exposed unclamped `Renderer.logZoom = max(0, log2(camera.zoom))`, drove splat diameter smoothly via `pointSize * pow(2.0, logZoom * zoomBalance)`, relaxed `maxMagCutoff` up to `22.0` (`bin = 15` clamped in `computeSlotMagBins`), computed viewport-intersected on-screen point density via exact `Float64` `RTC` bounds with stationary-frame bit-exact exposure lock (`0.0%` pan pumping), decayed Mode 1 `refCount` smoothly from `96.0` to `1.15` across `Z=0..12+`, and expanded `PickingLayer` hit windows automatically for enlarged `pointSize`.
      - **Public Multiscale & HDR API + Controls (`src/lib/types.ts`, `src/lib/ViewState.ts`, `src/demo/ControlsPanel.ts`, `docs/API.md`):** Added `pointSize` (`1.0`), `zoomBalance` (`0.22`), `pointOpacity` (`'auto' | number`), and `exposure` (`'auto' | number`) to `DeepgraphEncoding`, `ViewOptionsPatch`, `ViewStateSnapshot`, and `'Multiscale & Tone Mapping'` controls in `ControlsPanel.ts`.
@@ -696,20 +696,20 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
   2. **`⛔ D12c` (Remote Push & Registry Publish):** Pushing `revival/2026-11-wip` to GitHub and publishing to npm / PyPI remain gated on explicit owner instruction.
 
 
-## 2026-11-21 — Post-Review Visual Restoration (`9491f7e` `R16 / G16 / B16` Optical RGB + `zoom > 36` Rescue), Pre-Publish `SPEC.md` `0.x` / `required_features` Gates & MuniLM `logs/` Backfill (`Held at ⛔ D12a / D12c`)
+## 2026-11-21 — Post-Review Visual Restoration (Pre-8b `R16 / G16 / B16` Optical RGB + `zoom > 36` Rescue), Pre-Publish `SPEC.md` `0.x` / `required_features` Gates & `logs/` Backfill (`Held at ⛔ D12a / D12c`)
 
 - **Done:**
-  1. **Restored Exact Pre-8b (`9491f7e`) Mode 0/3 `R16 / G16 / B16` Optical RGB Pipeline + `zoom > 36` Deep-Zoom Rescue (`deepgraph-arrowtiles-sandbox` `a2e4da1`):**
-     - Restored `9491f7e`'s verbatim `eval_color` optical RGB ramp stops, `three_aces_filmic`, `linear_to_srgb`, `splat_optical_pixel` (`word0 = R16 | (G16 << 16)`, `word1 = B16`, scale `1024.0`), Mode 3 star trails, and `fs_main` `min(ch, 1024u) / 1024.0` + `clamp(bg + rgb, 0, 1)` resolve in `src/core/ComputeRasterizer.ts` (preserving additive blue OB + golden red-clump mixing and incandescent white-gold bulge blooming while keeping `0.0000%` stationary shimmer).
-     - Anchored `zoom <= 36` (`logZoom <= 5.20`, including `Z=2` `zoom=1.8`, `Z=3` `zoom=2.17` at `exposure = 1.0`, and `LMC Z=7` `zoom=36` at `exposure = 0.35`) bit-for-bit to `9491f7e`, and applied smooth continuous star-size growth past `zoom = 64` + gentle deep-zoom exposure/bright-star rescue strictly above `logZoom > 5.20` (`M31` `zoom=48`, `LMC Z=8` `zoom=114`, `M33` `zoom=180`, `LMC Z=10` `zoom=358`).
+  1. **Restored Exact Pre-8b Mode 0/3 `R16 / G16 / B16` Optical RGB Pipeline + `zoom > 36` Deep-Zoom Rescue (`deepgraph`):**
+     - Restored the pre-8b verbatim `eval_color` optical RGB ramp stops, `three_aces_filmic`, `linear_to_srgb`, `splat_optical_pixel` (`word0 = R16 | (G16 << 16)`, `word1 = B16`, scale `1024.0`), Mode 3 star trails, and `fs_main` `min(ch, 1024u) / 1024.0` + `clamp(bg + rgb, 0, 1)` resolve in `src/core/ComputeRasterizer.ts` (preserving additive blue OB + golden red-clump mixing and incandescent white-gold bulge blooming while keeping `0.0000%` stationary shimmer).
+     - Anchored `zoom <= 36` (`logZoom <= 5.20`, including `Z=2` `zoom=1.8`, `Z=3` `zoom=2.17` at `exposure = 1.0`, and `LMC Z=7` `zoom=36` at `exposure = 0.35`) bit-for-bit to the pre-8b baseline, and applied smooth continuous star-size growth past `zoom = 64` + gentle deep-zoom exposure/bright-star rescue strictly above `logZoom > 5.20` (`M31` `zoom=48`, `LMC Z=8` `zoom=114`, `M33` `zoom=180`, `LMC Z=10` `zoom=358`).
      - Kept the 4 clean public `ViewOptions` (`pointSize`, `zoomBalance`, `pointOpacity`, `exposure`) across `types.ts`, `ViewState.ts`, `ControlsPanel.ts`, and `docs/API.md` (`dist/index.js` = `187.22 kB` / **`46.62 kB` gzip**; `dist/standalone.js` = `435.82 kB` / **`99.97 kB` gzip**).
   2. **Pre-Publish `SPEC.md` `v0.1` `0.x` Minor-Version & `required_features` Gates (`duckdb-arrowtiles` + `deepgraph-arrowtiles-sandbox`):**
      - Updated `docs/SPEC.md` (§1 & §6.4), `arrowtiles/builder.py` (`RESERVED_METADATA_KEYS`), `arrowtiles/reader.py`, `arrowtiles/validator.py`, `tests/test_spec_tiling.py`, and `src/lib/DatasetSession.ts` + `tests/phase8b-hdr-density.spec.ts` so `0.x` readers/validators reject `minor > 1` (`"0.2"` rejected) and reject malformed or unrecognized `"required_features": string[]` entries while accepting `[]` / omitted.
-  3. **MuniLM `logs/` Backfill (`duckdb-arrowtiles/logs/`):**
+  3. **Chronological `logs/` Backfill (`duckdb-arrowtiles/logs/`):**
      - Persisted `2026-11-21_05_WALKTHROUGH_viewer_phase-8b-visual-comparison-and-tuning.md` (with local comparison PNGs copied to `logs/assets/2026-11-21_05_*.png`), `2026-11-21_06_RESEARCH_all_2-5d-and-octree-tiling.md`, and `2026-11-21_07_RESEARCH_all_post-v0-1-format-improvements.md`, and indexed all three in `logs/README.md`.
 
 - **Evidence (`Intel xe-lpg iGPU`, `0 B` on RTX 5090):**
-  - **`Z <= 7` Bit-Exact Colour Match vs. `9491f7e` (`gaia_full.arrowtiles`):**
+  - **`Z <= 7` Bit-Exact Colour Match vs. Pre-8b Baseline (`gaia_full.arrowtiles`):**
     - `Z=2` (`zoom = 1.8`): `mean |ΔRGB| = 0.0000` (`maxAbsDiff = 0`, `ROI = 115.78`, `Chroma = 73.01`).
     - `Z=3` (`zoom = 2.17`): `mean |ΔRGB| = 0.0000` (`maxAbsDiff = 0`, `ROI = 213.35`, `Chroma = 109.96`, `0 / 962,054` shimmer).
     - `LMC Z=7` (`zoom = 36`): `mean |ΔRGB| = 0.0166` (`maxAbsDiff = 1`, `ROI = 120.18 vs 120.17`, `Contrast = 14.54×`, `Chroma = 67.75 vs 67.74`).
@@ -728,31 +728,33 @@ Re-ran every Phase 0 acceptance check myself instead of trusting the entry above
 - **Done:**
   1. **Locked `D12a` Final Package & Repository Names (`logs/2026-11-21_08_ADR_all_d12a-package-and-repo-naming.md`):**
      - **Writer (`arrowtiles`):** PyPI `arrowtiles` + target GitHub URL `https://github.com/kai-erlenbusch/arrowtiles` in `pyproject.toml`, `Cargo.toml`, and `README.md`.
-     - **Viewer (`deepgraph` `5786195`):** npm `"name": "deepgraph"` (`"private": true` held pending `⛔ D12c`) + target GitHub URL `https://github.com/kai-erlenbusch/deepgraph` across `package.json`, `package-lock.json`, `scripts/verify_consumer_dts.mjs`, `docs/API.md`, `index.html`, and refreshed `README.md` (with `pydeepgraph` noted for future Python/Jupyter widgets).
+     - **Viewer (`deepgraph`):** npm `"name": "deepgraph"` (`"private": true` held pending `⛔ D12c`) + target GitHub URL `https://github.com/kai-erlenbusch/deepgraph` across `package.json`, `package-lock.json`, `scripts/verify_consumer_dts.mjs`, `docs/API.md`, `index.html`, and refreshed `README.md` (with `pydeepgraph` noted for future Python/Jupyter widgets).
      - **Dual Sibling-Folder Resolution:** Updated `vite.config.ts`, `tests/phase8b-hdr-density.spec.ts`, `tests/conftest.py`, `scripts/build_samples.py`, and `scripts/bench/*` to check `arrowtiles` / `deepgraph` first and fall back to `duckdb-arrowtiles` / `deepgraph-arrowtiles-sandbox` seamlessly.
 
 
 ## 2026-11-22 — Pre-Release Repo Cleanup, CI Alignment, `AGENTS.md` & `v0.1.0` Documentation Overhaul (`Held at ⛔ D12c`)
 
 - **Done:**
-  1. **Phase A — Repo Cleanup, Disk Organization, MuniLM `logs/` Bootstrap & CI (`4ee4f7d` in `deepgraph`, `fe386af` in `arrowtiles`):**
+  1. **Phase A — Repo Cleanup, Disk Organization, Structured `logs/` Bootstrap & CI (`fe386af` in `arrowtiles`):**
      - Deleted stale tracked files (`START_HERE.md` in both repos; `task.md`, `src/assets/*`, `tests/memory-leak.spec.ts`, `.github/workflows/perf-ci.yml` in `deepgraph`; `requirements.txt` and `tests/test_legacy_duckdb_extension.py` in `arrowtiles`).
      - Split `deepgraph` Playwright scripts into `< 5 MiB` sample-only `npm run test:e2e` and `npm run test:e2e:heavy`, bootstrapped `deepgraph/logs/README.md`, added `[project.optional-dependencies] dev = ["pytest>=8.0"]` in `pyproject.toml`, and added `.github/workflows/ci.yml` (`main` / `master`) in both repos.
-     - Reclaimed `~31.2 GB` of duplicate/unused untracked artifacts (keeping `public/gaia_full.arrowtiles`, `public/lmsys_full.arrowtiles`, `samples/gaia_sample.arrowtiles`, `samples/lmsys_sample.arrowtiles`, `samples/lmsys_full_v01.arrowtiles`, and `samples/lmsys_d7_proportional_25k.arrowtiles`), relocated `archive/` + `research/` to `<workspace>/archive/`, and moved 27 pre-MuniLM June/July raw logs into `arrowtiles/logs/old/`.
-  2. **Phase B — `AGENTS.md` & `v0.1.0` Documentation Overhaul (`5e07166` in `deepgraph`):**
+     - Reclaimed `~31.2 GB` of duplicate/unused untracked artifacts (keeping `public/gaia_full.arrowtiles`, `public/lmsys_full.arrowtiles`, `samples/gaia_sample.arrowtiles`, `samples/lmsys_sample.arrowtiles`, `samples/lmsys_full_v01.arrowtiles`, and `samples/lmsys_d7_proportional_25k.arrowtiles`), relocated `archive/` + `research/` to `<workspace>/archive/`, and moved 27 legacy June/July raw logs into `arrowtiles/logs/old/`.
+  2. **Phase B — `AGENTS.md` & `v0.1.0` Documentation Overhaul:**
      - Added `AGENTS.md` in both repositories (`deepgraph` and `arrowtiles`), rewrote `arrowtiles/README.md` with the 2-stage `run_bucketer` + Rayon Zstd PMTiles v3 architecture + CLI & verified `ArrowTilesReader` Python API docs, and updated `deepgraph/README.md` & `docs/API.md`.
 - **Evidence:**
   - `arrowtiles` pytest: **`53 passed in 24.55s`** (`0 skipped`); `README.md` Python API `python -c` smoke test: **`README_PYTHON_API_SMOKE_OK`**.
   - `deepgraph` `typecheck` + `build:lib` + `verify:types` + `build:demo` + `npm run test:e2e` (`Intel xe-lpg iGPU`): **`3 passed in 1.1m`** (`liveDevices = 0`, `liveBytes = 0`).
 
 
-## 2026-11-22 — Path/Link Normalization & Local `D12c` Release Prep (`npm pack --dry-run`, `maturin` `abi3` Wheel/SDist Dry-Run, `release.yml`, `main` Fast-Forward)
+## 2026-11-22 — Path/Link Normalization, Stage 2a Renames, DuckDB 2.0 Fix, Writer Polish & `D12b` Split Licensing
 
 - **Done:**
-  1. **Path & Link Normalization (`e7fd666` in `deepgraph`, `ac55f0a` in `arrowtiles`):**
+  1. **Path & Link Normalization (`ac55f0a` in `arrowtiles`):**
      - Converted all `file:///...` Markdown links in `docs/PROGRESS_2026-11.md` and `logs/2026-11-*.md` to repo-relative links (or `https://github.com/kai-erlenbusch/{deepgraph,arrowtiles}/blob/main/...` cross-repo links) for tracked files, converted deleted/gitignored links to inline code labels, and normalized local filesystem paths to `<workspace>/...` and `<artifacts>/...` (`0` remaining local path hits across both repos).
-  2. **Packaging Dry-Runs & Multi-Platform PyPI Workflow (`.github/workflows/release.yml`):**
-     - `deepgraph`: Verified `npm pack --dry-run` (`deepgraph-0.1.0.tgz`, `320.5 kB` packed / `1.2 MB` unpacked, `10` files strictly matching `dist/*`, `docs/API.md`, `README.md`, `LICENSE`, `NOTICE`, `package.json`; `"private": true` preserved for Stage 2a GitHub push).
-     - `arrowtiles`: Verified `maturin build --release --sdist` (`arrowtiles-0.1.0-cp39-abi3-win_amd64.whl` + `arrowtiles-0.1.0.tar.gz` including `LICENSE`, `NOTICE`, and `docs/SPEC.md`), fixed `maturin develop --release` CLI invocation in `.github/workflows/ci.yml`, added `homepage`/`repository` to `arrowtiles-engine/Cargo.toml`, and added `.github/workflows/release.yml` (`PyO3/maturin-action@v1` building universal `cp39-abi3` wheels across Linux `x86_64`/`aarch64`, macOS `arm64`/`x86_64`, Windows `x64` + `sdist`, publishing via PyPI Trusted Publishing on `v*` tags).
-  3. **Fast-Forwarded Local `main` (`git merge --ff-only revival/2026-11-wip`):**
-     - Fast-forwarded local `main` in both `deepgraph` and `arrowtiles` ready for Stage 2a (GitHub repo renames + `origin` URL update + `git push origin main`).
+  2. **Stage 2a GitHub Renames, Multi-Platform `abi3` Wheel Matrix & DuckDB 2.0 Determinism Fix (`fa19e4e`):**
+     - Renamed GitHub repositories to `kai-erlenbusch/arrowtiles` and `kai-erlenbusch/deepgraph` (archiving the June 2026 prototype as `kai-erlenbusch/deepgraph-webgpu-legacy`).
+     - Added `.github/workflows/release.yml` (`PyO3/maturin-action@v1` building universal `cp39-abi3` wheels across Linux `x86_64`/`aarch64`, macOS `arm64`/`x86_64`, Windows `x64` + `sdist`), pruned unused `pmtiles` S3/`aws-lc-sys` default features, declared `"cffi>=1.15.0"`, added `canonicalize_tile_column` (`MutableArrayData`) in `arrowtiles-engine/src/lib.rs` to zero masked-out `NULL` IPC slots, and updated `builder.py` to use `con.sql(...).to_arrow_reader(batch_size=100_000)` / `.fetchall()[0]` for DuckDB `2.0.1` compatibility.
+  3. **Pre-`v0.1.0` Writer Polish (`4dc6ca1`):**
+     - Added automatic `^__index_level_\d+__$` omission before Parquet scanning, guarded `Float64 → Float32` payload attribute downcasting (`--keep-float64` opt-out, `-40.2%` LMSys archive size reduction), deterministic Windows `mmap.mmap.close()` teardown in `reader.py` and `validator.py`, and 6 new tests in `tests/test_writer_polish_v01.py` (`59 passed`, `0` warnings).
+  4. **Amended `D12b` Split Ecosystem Licensing (`logs/2026-11-22_06_ADR_all_d12b-split-licensing-cc-by-nc-and-apache2.md`):**
+     - Kept `arrowtiles` + `docs/SPEC.md` under **`Apache-2.0`** (`Copyright 2026 Kai Erlenbusch`), while licensing `deepgraph` under **`CC-BY-NC-4.0` + Commercial License (`erlenbusch@uchicago.edu`)** with a clean `CC-BY-NC-4.0` `main` branch (`"private": true` held pending Stage 2b registry publish sign-off).

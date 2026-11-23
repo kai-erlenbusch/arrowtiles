@@ -12,14 +12,14 @@ conversation_id: e91adbce-084e-445b-98b1-a434c428c86d
 
 ## 1. Summary of Changes
 
-### Step 1 — Path & Markdown Link Normalization (`e7fd666` in `deepgraph`, `ac55f0a` in `arrowtiles`)
+### Step 1 — Path & Markdown Link Normalization (`ac55f0a` in `arrowtiles`)
 - Normalized all local `file:///` and developer-machine paths across all 34 Markdown files in both repositories (`6` in `deepgraph`, `28` in `arrowtiles`) into valid repo-relative or `https://github.com/kai-erlenbusch/.../blob/main/...` links (`0` broken links, `0` local path leaks).
 
 ### Step 2 — `D12c` Stage 2a GitHub Renames & Packaging/CI Hardening
 - **GitHub Repository Alignment:**
   - Renamed and archived the June 2026 prototype repository as `kai-erlenbusch/deepgraph-webgpu-legacy`.
   - Renamed `kai-erlenbusch/duckdb-arrowtiles` → [`kai-erlenbusch/arrowtiles`](https://github.com/kai-erlenbusch/arrowtiles) and `kai-erlenbusch/deepgraph-arrowtiles-sandbox` → [`kai-erlenbusch/deepgraph`](https://github.com/kai-erlenbusch/deepgraph) (preserving `"private": true` on `deepgraph` until explicit Stage 2b registry sign-off).
-- **`deepgraph` CI & Tarball Verification (`002fd8d`):**
+- **`deepgraph` CI & Tarball Verification:**
   - Pruned stale Three.js lockfile remnants and updated `.github/workflows/ci.yml` to Node 24 (`npm install --no-audit --no-fund`) to avoid `npm/cli#4828` optional cross-OS Rollup/Rolldown WASM peer resolution failures on Linux runners.
   - Verified `npm pack --dry-run`: `deepgraph-0.1.0.tgz` (`320.5 kB` packed, `1.2 MB` unpacked) ships strictly the 10 expected distribution files (`dist/*`, `docs/API.md`, `README.md`, `LICENSE`, `NOTICE`, `package.json`).
 - **`arrowtiles` Multi-OS `abi3` Wheel Matrix & `pmtiles` Crate Pruning (`b3fa783`, `9bb9e83`):**

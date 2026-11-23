@@ -2,6 +2,7 @@
 name = "arrowtiles_core"
 version = "0.1.0"
 edition = "2021"
+authors = ["Kai Erlenbusch <erlenbusch@uchicago.edu>"]
 license = "Apache-2.0"
 description = "Rust PyO3 bucketing and Zstd PMTiles packing core for ArrowTiles v0.1"
 homepage = "https://github.com/kai-erlenbusch/arrowtiles"

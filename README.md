@@ -9,7 +9,7 @@
 
 - **Wire-Format Specification:** [`docs/SPEC.md`](docs/SPEC.md)
 - **Range & Decode Benchmarks vs. Parquet:** [`docs/BENCHMARK_parquet_vs_arrowtiles.md`](docs/BENCHMARK_parquet_vs_arrowtiles.md)
-- **Companion WebGPU Viewer Engine:** **[deepgraph](https://github.com/kai-erlenbusch/deepgraph)** (`npm install deepgraph`)
+- **Companion WebGPU Viewer Engine:** **[deepgraph](https://github.com/kai-erlenbusch/deepgraph)** (`npm install deepgraph`, `CC BY-NC 4.0` + commercial license)
 
 ---
 
@@ -166,6 +166,12 @@ For contributor invariants and wire-format rules, see [`AGENTS.md`](AGENTS.md) a
 - **Loadable DuckDB Extension:** Native `COPY (...) TO 'out.arrowtiles' (FORMAT ARROWTILES)` SQL sink.
 
 ---
+
+## Citing
+
+If you use ArrowTiles in academic or scientific work, please cite:
+
+> Erlenbusch, K. (2026). *ArrowTiles: Spatial Pyramid Format and DuckDB + Rust Builder for Large-Scale Point Clouds and Embeddings* [Computer software]. https://github.com/kai-erlenbusch/arrowtiles
 
 ## Licensing
 

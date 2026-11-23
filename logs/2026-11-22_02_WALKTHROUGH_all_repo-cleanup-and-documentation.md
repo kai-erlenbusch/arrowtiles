@@ -12,19 +12,19 @@ conversation_id: e91adbce-084e-445b-98b1-a434c428c86d
 
 ## 1. Summary of Changes
 
-### Phase A — Cleanup, Disk Organization, MuniLM `logs/` Bootstrap & CI (`4ee4f7d` in `deepgraph`, `fe386af` in `arrowtiles`)
-- **`deepgraph` (`4ee4f7d`):**
+### Phase A — Cleanup, Disk Organization, Structured `logs/` Bootstrap & CI (`fe386af` in `arrowtiles`)
+- **`deepgraph`:**
   - Removed obsolete tracked files: `task.md`, `START_HERE.md`, `src/assets/{hero.png,typescript.svg,vite.svg}`, `tests/memory-leak.spec.ts`, and `.github/workflows/perf-ci.yml`.
   - Split `package.json` scripts into `< 5 MiB` sample-only `npm run test:e2e` and explicit `npm run test:e2e:heavy`.
-  - Upgraded `.gitignore` to the MuniLM standard keeping `logs/oct/` and `logs/old/` gitignored, added `logs/README.md`, and created Node 22 `.github/workflows/ci.yml` (`main` / `master`).
+  - Upgraded `.gitignore` keeping `logs/oct/` and `logs/old/` gitignored, added `logs/README.md`, and created Node 22 `.github/workflows/ci.yml` (`main` / `master`).
   - Reclaimed `~30.3 GB` on disk (`public/gaia.arrowtiles` duplicate + `public/test*.arrowtiles` + ephemeral caches removed while preserving `public/gaia_full.arrowtiles` `31.0 GB` and `public/lmsys_full.arrowtiles` `841 MB`) and relocated `archive/` + `research/` to `<workspace>/archive/deepgraph-2026-07/`.
 - **`arrowtiles` (`fe386af`):**
   - Removed obsolete tracked files: `requirements.txt` (plus `!requirements.txt` in `.gitignore`), `START_HERE.md`, and `tests/test_legacy_duckdb_extension.py`.
   - Added `[project.optional-dependencies] dev = ["pytest>=8.0"]` in `pyproject.toml` and multi-OS (`ubuntu-latest`, `windows-latest`) Rust + Python `.github/workflows/ci.yml` (`main` / `master`).
   - Reclaimed `~891 MB` of unused scratch/benchmark files while preserving `samples/lmsys_d7_proportional_25k.arrowtiles` (`291 MB`), `gaia_sample.arrowtiles`, `lmsys_sample.arrowtiles`, and `lmsys_full_v01.arrowtiles`; relocated `archive/` to `<workspace>/archive/arrowtiles-2026-07/`; and moved 27 loose June/July raw logs into `logs/old/`.
 
-### Phase B — `AGENTS.md` & `v0.1.0` Documentation Overhaul (`5e07166` in `deepgraph`)
-- Created `AGENTS.md` in both `deepgraph` and `arrowtiles` covering sibling repository boundaries, clean-room Apache-2.0 rules, module maps, WebGPU/spec/determinism invariants, dual-bundle worker/WASM rules, sample fixture & GPU coexistence rules, and MuniLM `logs/` conventions.
+### Phase B — `AGENTS.md` & `v0.1.0` Documentation Overhaul
+- Created `AGENTS.md` in both `deepgraph` and `arrowtiles` covering sibling repository boundaries, clean-room licensing rules, module maps, WebGPU/spec/determinism invariants, dual-bundle worker/WASM rules, sample fixture & GPU coexistence rules, and chronological `logs/` conventions.
 - Rewrote `arrowtiles/README.md` with the deterministic 2-stage `run_bucketer` + Rayon Zstd PMTiles v3 architecture (removing all stale `INSTALL lindel`, `requirements.txt`, and `bucketed_temp.parquet` instructions), full CLI docs (`build`, `validate`, `inspect`), and verified `ArrowTilesReader` Python API examples (`header`, `metadata`, `schema`, `list_tiles`, `read_tile`, `iter_tiles`).
 - Updated `deepgraph/README.md` and `docs/API.md` with `npm run test:e2e` vs `npm run test:e2e:heavy` commands, the sibling `../arrowtiles/samples/` prerequisite, and links to `AGENTS.md`.
 

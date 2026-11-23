@@ -19,7 +19,7 @@ conversation_id: e91adbce-084e-445b-98b1-a434c428c86d
 
 ```mermaid
 flowchart TD
-    P0["Phase 0 (Finish): Restore PROGRESS, Archive Stale .pyd, Vite Security, MuniLM logs/, Portable Tests"] --> P1["Phase 1: SPEC v0.1 + Dense row_id + UInt8/16 Categories + max_tile_rows + Reader/Validate + Viewer v0.1/maxZoom Compat"]
+    P0["Phase 0 (Finish): Restore PROGRESS, Archive Stale .pyd, Vite Security, Structured logs/, Portable Tests"] --> P1["Phase 1: SPEC v0.1 + Dense row_id + UInt8/16 Categories + max_tile_rows + Reader/Validate + Viewer v0.1/maxZoom Compat"]
     P1 --> P2["Phase 2: 1-Hilbert-at-max_zoom Bit-Shift Bucketer + SQL Tie-Break + Completeness Suite"]
     P2 --> P3["Phase 3: Seeded Random vs Column Priority + Proportional vs Even-Coverage Sampling"]
     P3 --> P4["Phase 4 (Gate): Empirical Browser Benchmark (.arrowtiles vs 2 Parquet Layouts) + Renderer Gate"]
@@ -41,7 +41,7 @@ flowchart TD
    - Large data stays local and untracked. Never delete or overwrite `public/gaia_full.arrowtiles` (31.0 GB), `public/gaia.arrowtiles` (30.3 GB), `public/lmsys_full.arrowtiles` (841 MB), `s3_cache/`, `archive/`, or `research/`.
 2. **Single writer & pre-flight check:** Run `git status` in both repos before starting each phase; stop and report any unexpected change.
 3. **Append-only progress log:** Never rewrite or truncate [`docs/PROGRESS_2026-11.md`](../docs/PROGRESS_2026-11.md); append one structured entry per phase.
-4. **MuniLM `logs/` convention:** Track `logs/README.md` and `logs/YYYY-MM-DD_<seq>_<TYPE>_<scope>_<topic-slug>.md` in [`duckdb-arrowtiles/logs/`](./) via surgical `.gitignore` (`logs/*`, `!logs/README.md`, `!logs/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]_*.md`), keeping 100% of historic raw transcripts untracked.
+4. **Chronological `logs/` convention:** Track `logs/README.md` and `logs/YYYY-MM-DD_<seq>_<TYPE>_<scope>_<topic-slug>.md` in [`duckdb-arrowtiles/logs/`](./) via surgical `.gitignore` (`logs/*`, `!logs/README.md`, `!logs/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]_*.md`), keeping 100% of historic raw transcripts untracked.
 5. **Evidence-backed completion:** Every phase stops after passing its acceptance checks and recording commands, counts, and timings in `docs/PROGRESS_2026-11.md`, awaiting owner go-ahead before starting the next phase.
 
 ---
@@ -70,7 +70,7 @@ flowchart TD
 
 1. **Restore `PROGRESS_2026-11.md` (`D1`)** and confirm the 166-line `8c04c98` baseline is intact.
 2. **Archive stale root `.pyd` (`D2`)** to `archive/arrowtiles_core_2026-07-22.pyd`.
-3. **Bootstrap MuniLM `logs/` tracking (`Patch 5`):** Update `duckdb-arrowtiles/.gitignore` with surgical un-ignore rules; persist our Audit (`03`), Deep Research (`04`), and Merged Consensus Plan (`05`) logs in `duckdb-arrowtiles/logs/` and index `01`–`05` in `logs/README.md` (verifying 0 historic transcript bytes staged).
+3. **Bootstrap structured `logs/` tracking (`Patch 5`):** Update `duckdb-arrowtiles/.gitignore` with surgical un-ignore rules; persist our Audit (`03`), Deep Research (`04`), and Merged Consensus Plan (`05`) logs in `duckdb-arrowtiles/logs/` and index `01`–`05` in `logs/README.md` (verifying 0 historic transcript bytes staged).
 4. **Harden Vite range server ([`vite.config.ts`](https://github.com/kai-erlenbusch/deepgraph/blob/main/vite.config.ts)):**
    - Default `server.host` to `'127.0.0.1'`.
    - Wrap `decodeURIComponent` in `try/catch` (`400 Bad Request`).
