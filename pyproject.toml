@@ -4,11 +4,12 @@ build-backend = "maturin"
 
 [project]
 name = "arrowtiles"
-version = "0.1.0"
+version = "0.1.1"
 description = "DuckDB + Rust (PyO3) ArrowTiles v0.1 spatial pyramid builder, reader, and validator"
 readme = "README.md"
 authors = [{ name = "Kai Erlenbusch", email = "erlenbusch@uchicago.edu" }]
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10"
 keywords = ["arrowtiles", "pmtiles", "apache-arrow", "duckdb", "webgpu", "quadtree", "visualization"]
 dependencies = [
@@ -40,4 +41,9 @@ include = [
     { path = "LICENSE", format = "sdist" },
     { path = "NOTICE", format = "sdist" },
     { path = "docs/SPEC.md", format = "sdist" },
+]
+exclude = [
+    "assets/**",
+    "logs/**",
+    "scripts/**",
 ]

@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: ["main", "master"]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -42,5 +45,5 @@ jobs:
           python -m venv .venv
           if [ -f .venv/bin/activate ]; then source .venv/bin/activate; else source .venv/Scripts/activate; fi
           python -m pip install --upgrade pip "maturin>=1.4,<2.0"
-          maturin develop --release --extras dev
-          python -m pytest -v -rs -p no:cacheprovider
+          maturin develop --release --locked --extras dev
+          python -m pytest -v -rs -p no:cacheprovider -W error::UserWarning

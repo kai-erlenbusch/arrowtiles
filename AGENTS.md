@@ -32,7 +32,7 @@ arrowtiles/
 ├── builder.py               # Single-pass DuckDB SQL preflight, Pass 1/2 orchestration & SHA-256 `--resume` manifest
 ├── reader.py                # Reference `.arrowtiles` v0.1 reader (`header`, `metadata`, `schema`, `list_tiles`, `read_tile`, `iter_tiles`)
 ├── validator.py             # Full SPEC v0.1 archive validator (`validate_file` -> `ValidationResult`)
-└── _zstd.py                 # Zstandard decompression helper (Rust `_core` fast path + fallback)
+└── _zstd.py                 # Zstandard decompression helper (Python 3.14+ stdlib compression.zstd + PyArrow fallback)
 arrowtiles-engine/
 ├── Cargo.toml               # `arrowtiles_core` PyO3 cdylib (`arrow`, `parquet`, `pmtiles`, `fast_hilbert`, `rayon`, `zstd`)
 └── src/lib.rs               # Deterministic zero-atomic 2-stage `run_bucketer` + parallel Rayon Zstd PMTiles packer

@@ -293,6 +293,7 @@ def test_gaia_preset_both_esa_dr3_and_legacy_schemas_plus_cli_forwarding(
         capture_output=True,
         text=True,
         check=False,
+        cwd=str(tmp_path),
     )
     assert proc.returncode == 0, f"CLI failed: {proc.stderr}\n{proc.stdout}"
     val_cli = validate_file(out_cli, expected_input_rows=300)

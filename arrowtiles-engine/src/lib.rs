@@ -1,7 +1,6 @@
-use std::collections::HashMap;
+use std::collections::hash_map::{Entry, HashMap};
 use std::fs::File;
 use std::io::BufWriter;
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -30,11 +29,15 @@ const COARSE_TILES: usize = 5_461; // (4^7 - 1) / 3
 const MID_MAX_Z: u8 = 9;
 const MID_TILES: usize = 349_525 - COARSE_TILES; // (4^10 - 1) / 3 - 5461
 
+const MAX_COMPRESSED_TILE_BYTES: usize = 64 * 1024 * 1024;
+
 const RESERVED_OUTPUT_COLUMNS: &[&str] = &["x_u16", "y_u16", "z", "final_tile_id"];
 
 const RESERVED_METADATA_KEYS: &[&str] = &[
     "format",
     "version",
+    "tiling",
+    "required_features",
     "arrow_schema",
     "bounds",
     "priority",
@@ -63,11 +66,18 @@ fn take_ffi_stream(stream_ptr: usize) -> Result<arrow::ffi_stream::ArrowArrayStr
     Ok(arrow::ffi_stream::ArrowArrayStreamReader::try_new(stream)?)
 }
 
+fn build_rayon_pool(rayon_threads: Option<usize>) -> Result<rayon::ThreadPool> {
+    let mut builder = rayon::ThreadPoolBuilder::new();
+    if let Some(n) = rayon_threads {
+        builder = builder.num_threads(n.max(1));
+    }
+    builder
+        .build()
+        .map_err(|e| anyhow::anyhow!("Failed to initialize scoped Rayon thread pool: {}", e))
+}
+
 #[pyfunction]
-fn init_threadpool(threads: usize) -> PyResult<()> {
-    let _ = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build_global();
+fn init_threadpool(_threads: usize) -> PyResult<()> {
     Ok(())
 }
 
@@ -83,7 +93,8 @@ fn init_threadpool(threads: usize) -> PyResult<()> {
     allow_oversize_leaves,
     x_col_name,
     y_col_name,
-    z_buffer_limit
+    z_buffer_limit,
+    rayon_threads=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_bucketer(
@@ -99,6 +110,7 @@ fn run_bucketer(
     x_col_name: String,
     y_col_name: String,
     z_buffer_limit: usize,
+    rayon_threads: Option<usize>,
 ) -> PyResult<(u8, u32, u64)> {
     run_bucketer_impl(
         py,
@@ -113,6 +125,7 @@ fn run_bucketer(
         x_col_name,
         y_col_name,
         z_buffer_limit,
+        rayon_threads,
     )
     .map_err(|e| PyRuntimeError::new_err(e.to_string()))
 }
@@ -131,8 +144,10 @@ fn run_bucketer_impl(
     x_col_name: String,
     y_col_name: String,
     z_buffer_limit: usize,
+    rayon_threads: Option<usize>,
 ) -> Result<(u8, u32, u64)> {
     let mut reader = take_ffi_stream(stream_ptr)?;
+    let pool = build_rayon_pool(rayon_threads)?;
 
     let is_even_coverage = match sampling_mode.as_str() {
         "even_coverage" => true,
@@ -192,7 +207,7 @@ fn run_bucketer_impl(
 
     let output_schema = Arc::new(Schema::new(out_fields));
 
-    let words_per_tile = (grid_int * grid_int + 63) / 64;
+    let words_per_tile = (grid_int * grid_int).div_ceil(64);
     let mut coarse_bitsets: Vec<u64> = if is_even_coverage {
         vec![0_u64; COARSE_TILES * words_per_tile]
     } else {
@@ -217,7 +232,8 @@ fn run_bucketer_impl(
     let mut z_buffer_rows: HashMap<u8, usize> = HashMap::new();
 
     loop {
-        let batch_res = reader.next();
+        py.check_signals()?;
+        let batch_res = py.allow_threads(|| reader.next());
         let batch = match batch_res {
             Some(Ok(b)) => b,
             Some(Err(e)) => return Err(e.into()),
@@ -272,23 +288,25 @@ fn run_bucketer_impl(
                 let n20 = (1_u64 << MAX_SPILL_ZOOM) as f64;
                 let max_idx_20 = (1_u32 << MAX_SPILL_ZOOM) - 1;
 
-                let stage_a: Vec<(u32, u32, u64)> = (0..num_rows)
-                    .into_par_iter()
-                    .map(|i| {
-                        let raw_x = x_vals[i];
-                        let raw_y = y_vals[i];
-                        if !raw_x.is_finite() || !raw_y.is_finite() {
-                            saw_non_finite.store(true, Ordering::Relaxed);
-                            return (0, 0, 0);
-                        }
-                        let x = raw_x.clamp(0.0, 1.0);
-                        let y = raw_y.clamp(0.0, 1.0);
-                        let ix_20 = (x * n20).min(max_idx_20 as f64) as u32;
-                        let iy_20 = (y * n20).min(max_idx_20 as f64) as u32;
-                        let h_20 = fast_hilbert::xy2h(ix_20, iy_20, MAX_SPILL_ZOOM);
-                        (ix_20, iy_20, h_20)
-                    })
-                    .collect();
+                let stage_a: Vec<(u32, u32, u64)> = pool.install(|| {
+                    (0..num_rows)
+                        .into_par_iter()
+                        .map(|i| {
+                            let raw_x = x_vals[i];
+                            let raw_y = y_vals[i];
+                            if !raw_x.is_finite() || !raw_y.is_finite() {
+                                saw_non_finite.store(true, Ordering::Relaxed);
+                                return (0, 0, 0);
+                            }
+                            let x = raw_x.clamp(0.0, 1.0);
+                            let y = raw_y.clamp(0.0, 1.0);
+                            let ix_20 = (x * n20).min(max_idx_20 as f64) as u32;
+                            let iy_20 = (y * n20).min(max_idx_20 as f64) as u32;
+                            let h_20 = fast_hilbert::xy2h(ix_20, iy_20, MAX_SPILL_ZOOM);
+                            (ix_20, iy_20, h_20)
+                        })
+                        .collect()
+                });
 
                 if saw_non_finite.load(Ordering::Relaxed) {
                     anyhow::bail!(
@@ -462,20 +480,20 @@ fn run_bucketer_impl(
             if *rows >= z_buffer_limit {
                 let single_batch =
                     arrow::compute::concat_batches(&output_schema, buffer.as_slice())?;
-                if !writers.contains_key(&z) {
-                    let path = format!("{}/z_{}.parquet", output_dir, z);
-                    let file = File::create(path)?;
-                    let new_writer = ArrowWriter::try_new(
-                        file,
-                        output_schema.clone(),
-                        Some(writer_props.clone()),
-                    )?;
-                    writers.insert(z, new_writer);
-                }
-                let writer = writers
-                    .get_mut(&z)
-                    .ok_or_else(|| anyhow::anyhow!("Missing writer for z={}", z))?;
-                writer.write(&single_batch)?;
+                let writer = match writers.entry(z) {
+                    Entry::Occupied(e) => e.into_mut(),
+                    Entry::Vacant(e) => {
+                        let path = format!("{}/z_{}.parquet", output_dir, z);
+                        let file = File::create(path)?;
+                        let new_writer = ArrowWriter::try_new(
+                            file,
+                            output_schema.clone(),
+                            Some(writer_props.clone()),
+                        )?;
+                        e.insert(new_writer)
+                    }
+                };
+                py.allow_threads(|| writer.write(&single_batch))?;
                 buffer.clear();
                 *rows = 0;
             }
@@ -494,25 +512,25 @@ fn run_bucketer_impl(
     for (z, buffer) in z_buffers {
         if !buffer.is_empty() {
             let single_batch = arrow::compute::concat_batches(&output_schema, &buffer)?;
-            if !writers.contains_key(&z) {
-                let path = format!("{}/z_{}.parquet", output_dir, z);
-                let file = File::create(path)?;
-                let new_writer = ArrowWriter::try_new(
-                    file,
-                    output_schema.clone(),
-                    Some(writer_props.clone()),
-                )?;
-                writers.insert(z, new_writer);
-            }
-            let writer = writers
-                .get_mut(&z)
-                .ok_or_else(|| anyhow::anyhow!("Missing writer for z={}", z))?;
-            writer.write(&single_batch)?;
+            let writer = match writers.entry(z) {
+                Entry::Occupied(e) => e.into_mut(),
+                Entry::Vacant(e) => {
+                    let path = format!("{}/z_{}.parquet", output_dir, z);
+                    let file = File::create(path)?;
+                    let new_writer = ArrowWriter::try_new(
+                        file,
+                        output_schema.clone(),
+                        Some(writer_props.clone()),
+                    )?;
+                    e.insert(new_writer)
+                }
+            };
+            py.allow_threads(|| writer.write(&single_batch))?;
         }
     }
 
     for (_, writer) in writers {
-        writer.close()?;
+        py.allow_threads(|| writer.close())?;
     }
 
     log::info!(
@@ -599,6 +617,7 @@ fn canonicalize_tile_column(col: &Arc<dyn Array>) -> Arc<dyn Array> {
 #[allow(clippy::too_many_arguments)]
 fn flush_chunk_buffer(
     py: Python,
+    pool: &rayon::ThreadPool,
     buffer: &mut Vec<(u64, Vec<RecordBatch>)>,
     rows: &mut usize,
     writer: &mut pmtiles::PmTilesStreamWriter<BufWriter<File>>,
@@ -618,89 +637,103 @@ fn flush_chunk_buffer(
     let schema = export_schema.clone();
 
     let processed_tiles: Vec<(u64, u32, Vec<u8>)> = py.allow_threads(|| -> Result<Vec<(u64, u32, Vec<u8>)>> {
-        to_process
-            .into_par_iter()
-            .map(|(tid, batches)| -> Result<(u64, u32, Vec<u8>)> {
-                let mut export_batches = Vec::with_capacity(batches.len());
-                for b in &batches {
-                    let mut cols = Vec::with_capacity(schema.fields().len());
-                    for f in schema.fields() {
-                        let col = b
-                            .column_by_name(f.name())
-                            .ok_or_else(|| anyhow::anyhow!("Missing column '{}'", f.name()))?;
-                        if !f.is_nullable() && col.null_count() > 0 {
-                            anyhow::bail!(
-                                "Non-nullable column '{}' contains {} NULL value(s)",
-                                f.name(),
-                                col.null_count()
-                            );
+        pool.install(|| {
+            to_process
+                .into_par_iter()
+                .map(|(tid, batches)| -> Result<(u64, u32, Vec<u8>)> {
+                    let mut export_batches = Vec::with_capacity(batches.len());
+                    for b in &batches {
+                        let mut cols = Vec::with_capacity(schema.fields().len());
+                        for f in schema.fields() {
+                            let raw_col = b
+                                .column_by_name(f.name())
+                                .ok_or_else(|| anyhow::anyhow!("Missing column '{}'", f.name()))?;
+                            if !f.is_nullable() && raw_col.null_count() > 0 {
+                                anyhow::bail!(
+                                    "Non-nullable column '{}' contains {} NULL value(s)",
+                                    f.name(),
+                                    raw_col.null_count()
+                                );
+                            }
+                            let col = if raw_col.data_type() != f.data_type() {
+                                cast(raw_col.as_ref(), f.data_type())?
+                            } else {
+                                raw_col.clone()
+                            };
+                            cols.push(col);
                         }
-                        cols.push(col.clone());
+                        export_batches.push(RecordBatch::try_new(schema.clone(), cols)?);
                     }
-                    export_batches.push(RecordBatch::try_new(schema.clone(), cols)?);
-                }
 
-                let raw_single_batch = if export_batches.len() == 1 {
-                    export_batches
-                        .into_iter()
-                        .next()
-                        .ok_or_else(|| anyhow::anyhow!("Empty export_batches"))?
-                } else {
-                    arrow::compute::concat_batches(&schema, &export_batches)?
-                };
+                    let raw_single_batch = if export_batches.len() == 1 {
+                        export_batches
+                            .into_iter()
+                            .next()
+                            .ok_or_else(|| anyhow::anyhow!("Empty export_batches"))?
+                    } else {
+                        arrow::compute::concat_batches(&schema, &export_batches)?
+                    };
 
-                let canonical_cols: Vec<Arc<dyn Array>> = raw_single_batch
-                    .columns()
-                    .iter()
-                    .map(canonicalize_tile_column)
-                    .collect();
-                let single_batch = RecordBatch::try_new(schema.clone(), canonical_cols)?;
+                    let canonical_cols: Vec<Arc<dyn Array>> = raw_single_batch
+                        .columns()
+                        .iter()
+                        .map(canonicalize_tile_column)
+                        .collect();
+                    let single_batch = RecordBatch::try_new(schema.clone(), canonical_cols)?;
 
-                let tile_rows = u32::try_from(single_batch.num_rows())
-                    .map_err(|_| anyhow::anyhow!("Tile {} row count overflows u32", tid))?;
-                if tile_rows == 0 {
-                    anyhow::bail!("Refusing to write empty tile {}", tid);
-                }
-                if tile_rows > declared_max_tile_rows {
-                    anyhow::bail!(
-                        "Tile {} has {} rows, exceeding declared max_tile_rows ({})",
-                        tid,
-                        tile_rows,
-                        declared_max_tile_rows
-                    );
-                }
+                    let tile_rows = u32::try_from(single_batch.num_rows())
+                        .map_err(|_| anyhow::anyhow!("Tile {} row count overflows u32", tid))?;
+                    if tile_rows == 0 {
+                        anyhow::bail!("Refusing to write empty tile {}", tid);
+                    }
+                    if tile_rows > declared_max_tile_rows {
+                        anyhow::bail!(
+                            "Tile {} has {} rows, exceeding declared max_tile_rows ({})",
+                            tid,
+                            tile_rows,
+                            declared_max_tile_rows
+                        );
+                    }
 
-                let mut sink = Vec::new();
-                let mut stream_writer = StreamWriter::try_new_with_options(
-                    &mut sink,
-                    &schema,
-                    IpcWriteOptions::default(),
-                )?;
-                stream_writer.write(&single_batch)?;
-                stream_writer.finish()?;
+                    let mut sink = Vec::new();
+                    let mut stream_writer = StreamWriter::try_new_with_options(
+                        &mut sink,
+                        &schema,
+                        IpcWriteOptions::default(),
+                    )?;
+                    stream_writer.write(&single_batch)?;
+                    stream_writer.finish()?;
 
-                if sink.len() < global_schema_size + 8 {
-                    anyhow::bail!(
-                        "IPC buffer too short ({} bytes < schema {} + 8) on tile {}",
-                        sink.len(),
-                        global_schema_size,
-                        tid
-                    );
-                }
-                let next_bytes = &sink[global_schema_size..global_schema_size + 4];
-                if next_bytes != [0xFF, 0xFF, 0xFF, 0xFF] {
-                    anyhow::bail!(
-                        "Schema size mismatch on tile {}! Expected 0xFFFFFFFF continuation marker.",
-                        tid
-                    );
-                }
+                    if sink.len() < global_schema_size + 8 {
+                        anyhow::bail!(
+                            "IPC buffer too short ({} bytes < schema {} + 8) on tile {}",
+                            sink.len(),
+                            global_schema_size,
+                            tid
+                        );
+                    }
+                    let next_bytes = &sink[global_schema_size..global_schema_size + 4];
+                    if next_bytes != [0xFF, 0xFF, 0xFF, 0xFF] {
+                        anyhow::bail!(
+                            "Schema size mismatch on tile {}! Expected 0xFFFFFFFF continuation marker.",
+                            tid
+                        );
+                    }
 
-                let compressed_bytes = zstd::bulk::compress(&sink[global_schema_size..], 3)
-                    .map_err(|e| anyhow::anyhow!("Zstd compression failed: {}", e))?;
+                    let compressed_bytes = zstd::bulk::compress(&sink[global_schema_size..], 3)
+                        .map_err(|e| anyhow::anyhow!("Zstd compression failed: {}", e))?;
+                    if compressed_bytes.len() > MAX_COMPRESSED_TILE_BYTES {
+                        anyhow::bail!(
+                            "Compressed tile {} ({} bytes) exceeds 64 MiB ArrowTiles v0.1 limit",
+                            tid,
+                            compressed_bytes.len()
+                        );
+                    }
 
-                Ok((tid, tile_rows, compressed_bytes))
-            })
-            .collect()
+                    Ok((tid, tile_rows, compressed_bytes))
+                })
+                .collect()
+        })
     })?;
 
     for (tid, tile_rows, compressed_bytes) in processed_tiles {
@@ -724,6 +757,7 @@ fn flush_chunk_buffer(
 #[pyclass(unsendable)]
 struct ArrowTilesPacker {
     writer: Option<pmtiles::PmTilesStreamWriter<BufWriter<File>>>,
+    pool: rayon::ThreadPool,
     output_path: String,
     tmp_path: String,
     export_schema: Arc<Schema>,
@@ -778,8 +812,10 @@ impl ArrowTilesPacker {
         actual_max_zoom,
         declared_max_tile_rows,
         spec_metadata_json,
-        custom_metadata=None
+        custom_metadata=None,
+        rayon_threads=None
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         output_path: String,
         schema_stream_ptr: usize,
@@ -788,8 +824,11 @@ impl ArrowTilesPacker {
         declared_max_tile_rows: u32,
         spec_metadata_json: String,
         custom_metadata: Option<String>,
+        rayon_threads: Option<usize>,
     ) -> PyResult<Self> {
         let reader = take_ffi_stream(schema_stream_ptr)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let pool = build_rayon_pool(rayon_threads)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
         let input_schema = reader.schema().clone();
@@ -806,10 +845,18 @@ impl ArrowTilesPacker {
                     name
                 )));
             }
+            let target_dt = match f.data_type() {
+                DataType::Utf8View => DataType::Utf8,
+                DataType::BinaryView => DataType::Binary,
+                DataType::Decimal128(_, scale) | DataType::Decimal256(_, scale) if *scale < 0 => {
+                    DataType::Float64
+                }
+                other => other.clone(),
+            };
             if matches!(name, "row_id" | "x_u16" | "y_u16" | "z") {
-                out_fields.push(Arc::new(Field::new(name, f.data_type().clone(), false)));
+                out_fields.push(Arc::new(Field::new(name, target_dt, false)));
             } else {
-                out_fields.push(f.clone());
+                out_fields.push(Arc::new(f.as_ref().clone().with_data_type(target_dt)));
             }
         }
         let export_schema = Arc::new(Schema::new(out_fields));
@@ -872,6 +919,7 @@ impl ArrowTilesPacker {
 
         Ok(ArrowTilesPacker {
             writer: Some(writer),
+            pool,
             output_path,
             tmp_path,
             export_schema,
@@ -890,16 +938,22 @@ impl ArrowTilesPacker {
         })
     }
 
+    #[getter]
+    fn rayon_threads(&self) -> usize {
+        self.pool.current_num_threads()
+    }
+
     fn process_batch(&mut self, py: Python, stream_ptr: usize) -> PyResult<()> {
+        let mut reader = take_ffi_stream(stream_ptr)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
         if self.writer.is_none() {
             return Err(PyRuntimeError::new_err("writer already finalized"));
         }
 
-        let mut reader = take_ffi_stream(stream_ptr)
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-
         loop {
-            let batch_res = reader.next();
+            py.check_signals()?;
+            let batch_res = py.allow_threads(|| reader.next());
             let batch = match batch_res {
                 Some(Ok(b)) => b,
                 Some(Err(e)) => return Err(PyRuntimeError::new_err(e.to_string())),
@@ -940,6 +994,7 @@ impl ArrowTilesPacker {
                             .ok_or_else(|| PyRuntimeError::new_err("writer already finalized"))?;
                         flush_chunk_buffer(
                             py,
+                            &self.pool,
                             &mut self.chunk_buffer,
                             &mut self.chunk_buffer_rows,
                             writer_ref,
@@ -979,6 +1034,7 @@ impl ArrowTilesPacker {
                             .ok_or_else(|| PyRuntimeError::new_err("writer already finalized"))?;
                         flush_chunk_buffer(
                             py,
+                            &self.pool,
                             &mut self.chunk_buffer,
                             &mut self.chunk_buffer_rows,
                             writer_ref,
@@ -1021,6 +1077,7 @@ impl ArrowTilesPacker {
 
         if let Err(e) = flush_chunk_buffer(
             py,
+            &self.pool,
             &mut self.chunk_buffer,
             &mut self.chunk_buffer_rows,
             &mut writer,
@@ -1041,15 +1098,6 @@ impl ArrowTilesPacker {
             return Err(PyRuntimeError::new_err(e.to_string()));
         }
 
-        let out_path = Path::new(&self.output_path);
-        if out_path.exists() {
-            std::fs::remove_file(out_path).map_err(|e| {
-                PyIOError::new_err(format!(
-                    "Failed to replace existing '{}': {}",
-                    self.output_path, e
-                ))
-            })?;
-        }
         std::fs::rename(&self.tmp_path, &self.output_path).map_err(|e| {
             PyIOError::new_err(format!(
                 "Failed to rename '{}' -> '{}': {}",

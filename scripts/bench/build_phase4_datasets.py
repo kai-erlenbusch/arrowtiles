@@ -41,7 +41,7 @@ S3_CACHE_DIR = Path(
 LMSYS_FULL_PQ = Path(
     os.environ.get(
         "ARROWTILES_LMSYS_PARQUET",
-        str(WORKSPACE_PARENT / "duckdb-cosmograph-oss" / "lmsys.parquet"),
+        str(WORKSPACE_PARENT / "lmsys.parquet"),
     )
 )
 MOCK_LMSYS_PQ = Path(

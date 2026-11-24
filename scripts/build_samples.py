@@ -51,7 +51,7 @@ def _find_full_lmsys_source() -> Path | None:
     candidate = (
         Path(override)
         if override
-        else WORKSPACE_PARENT / "duckdb-cosmograph-oss" / "lmsys.parquet"
+        else WORKSPACE_PARENT / "lmsys.parquet"
     )
     return candidate if candidate.is_file() else None
 

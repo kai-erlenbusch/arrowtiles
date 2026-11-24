@@ -5,9 +5,10 @@
 [![Rust](https://img.shields.io/badge/Rust-1.80+-blue.svg)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/Python-3.10+-yellow.svg)](https://www.python.org/)
 
-**ArrowTiles** (`pip install arrowtiles`) is a deterministic DuckDB + Rust (`PyO3`) spatial pyramid builder, reference reader, and validator that packs multi-million to billion-row Parquet datasets (such as the **1.8 billion row ESA Gaia DR3 catalogue** or **2.84 million LMSys UMAP embeddings**) into single-file, HTTP Range-streamable **`.arrowtiles` (`v0.1`)** archives.
+**ArrowTiles** (`pip install arrowtiles`) is a deterministic DuckDB + Rust (`PyO3`) spatial pyramid builder, reference reader, and validator that packs multi-million to billion-row Parquet datasets (verified end-to-end on **`1,348,176,623` local ESA Gaia DR3 stars** from the 1.8B-star survey and **`2,835,490` LMSys UMAP embeddings**) into single-file, HTTP Range-streamable **`.arrowtiles` (`v0.1`)** archives.
 
 - **Wire-Format Specification:** [`docs/SPEC.md`](docs/SPEC.md)
+- **`1.35B` Gaia Hardware Crucible & Dual-GPU Benchmarks (`v0.1.1`):** [`docs/BENCHMARK_v011_crucible.md`](docs/BENCHMARK_v011_crucible.md)
 - **Range & Decode Benchmarks vs. Parquet:** [`docs/BENCHMARK_parquet_vs_arrowtiles.md`](docs/BENCHMARK_parquet_vs_arrowtiles.md)
 - **Companion WebGPU Viewer Engine:** **[deepgraph](https://github.com/kai-erlenbusch/deepgraph)** (`npm install deepgraph`, `CC BY-NC 4.0` + commercial license)
 
@@ -66,7 +67,7 @@ pip install "maturin>=1.4,<2.0"
 pip install -e ".[dev]" --no-build-isolation
 maturin develop --release
 
-# Run the test suite (53 tests):
+# Run the test suite (67 tests):
 pytest -v
 ```
 

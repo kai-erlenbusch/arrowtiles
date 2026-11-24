@@ -29,7 +29,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist
+          args: --release --locked --out dist
           sccache: "true"
           manylinux: auto
       - uses: actions/upload-artifact@v4
@@ -51,7 +51,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist
+          args: --release --locked --out dist
           sccache: "true"
       - uses: actions/upload-artifact@v4
         with:
@@ -73,7 +73,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist
+          args: --release --locked --out dist
           sccache: "true"
       - uses: actions/upload-artifact@v4
         with:
@@ -94,10 +94,48 @@ jobs:
           name: wheels-sdist
           path: dist
 
+  test-wheels:
+    needs: [linux, windows, macos]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+      - name: Install built wheel & run isolated pytest suite
+        shell: bash
+        env:
+          ARROWTILES_TEST_INSTALLED_WHEEL: "1"
+        run: |
+          REPO_DIST="$(pwd)/dist"
+          python -m venv "${RUNNER_TEMP}/wheel_venv"
+          if [ -f "${RUNNER_TEMP}/wheel_venv/bin/activate" ]; then
+            source "${RUNNER_TEMP}/wheel_venv/bin/activate"
+          else
+            source "${RUNNER_TEMP}/wheel_venv/Scripts/activate"
+          fi
+          python -m pip install --upgrade pip "pytest>=8.0" "pytest-timeout>=2.3" "cffi>=1.15.0" "duckdb>=1.0.0" "pmtiles>=3.4.0" "pyarrow>=16.0.0" "tqdm>=4.66.0"
+          python -m pip install --no-index --find-links="${REPO_DIST}" --no-deps arrowtiles
+          rm -rf "${RUNNER_TEMP}/wheel_test_run"
+          mkdir -p "${RUNNER_TEMP}/wheel_test_run"
+          cp -R tests "${RUNNER_TEMP}/wheel_test_run/tests"
+          cp pytest.ini "${RUNNER_TEMP}/wheel_test_run/pytest.ini"
+          cd "${RUNNER_TEMP}/wheel_test_run"
+          python -m pytest tests -v -rs -p no:cacheprovider -W error::UserWarning
+
   publish:
     name: Publish to PyPI (Tag Push Only)
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, windows, macos, sdist]
+    needs: [linux, windows, macos, sdist, test-wheels]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

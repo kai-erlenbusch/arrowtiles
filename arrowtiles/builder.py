@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import struct
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -113,6 +114,51 @@ DUCKDB_NUMERIC_TYPES = DUCKDB_INTEGER_TYPES | frozenset(
     {"FLOAT", "REAL", "DOUBLE", "DECIMAL", "NUMERIC"}
 )
 
+DUCKDB_TEMPORAL_TYPES = frozenset(
+    {
+        "DATE",
+        "TIMESTAMP",
+        "TIMESTAMP_S",
+        "TIMESTAMP_MS",
+        "TIMESTAMP_NS",
+        "TIMESTAMPTZ",
+        "TIMESTAMP WITH TIME ZONE",
+    }
+)
+
+
+def _should_downcast_double(
+    min_f: float,
+    max_f: float,
+    has_min: bool = True,
+    has_max: bool = True,
+) -> tuple[bool, str]:
+    """Return whether a DOUBLE payload column can be safely downcast to Float32."""
+    if (has_min and abs(min_f) > FLOAT32_SAFE_MAX) or (has_max and abs(max_f) > FLOAT32_SAFE_MAX):
+        return (
+            False,
+            f"range [{min_f:.3g}, {max_f:.3g}] exceeds Float32 bounds",
+        )
+    if has_min and has_max and max_f > min_f:
+        max_abs = max(abs(min_f), abs(max_f))
+        if (max_f - min_f) < max_abs * 1e-4:
+            return (
+                False,
+                f"narrow relative span ({max_f - min_f:.6g} across [{min_f:.6g}, {max_f:.6g}]) would lose Float32 precision",
+            )
+    elif (
+        has_min
+        and has_max
+        and min_f == max_f
+        and abs(min_f) > 16_777_216.0
+        and _round_f32(min_f) != min_f
+    ):
+        return (
+            False,
+            f"constant value {min_f:.17g} exceeds 2^24 Float32 exact integer precision",
+        )
+    return True, ""
+
 
 def _reject_non_finite_json(constant: str) -> Any:
     raise ValueError(
@@ -135,17 +181,21 @@ def _load_core_module():
     try:
         from arrowtiles import _core
 
-        return _core
-    except ImportError:
-        try:
-            import arrowtiles_core as _core  # type: ignore[no-redef]
-
+        if _core is not None:
             return _core
-        except ImportError as exc:
-            raise ImportError(
-                "Native engine 'arrowtiles._core' not found. "
-                "Run `maturin develop --release` inside the project virtualenv."
-            ) from exc
+    except ImportError:
+        pass
+    try:
+        import arrowtiles_core as _core  # type: ignore[no-redef]
+
+        if _core is not None:
+            return _core
+    except ImportError:
+        pass
+    raise ImportError(
+        "Native engine 'arrowtiles._core' not found. "
+        "Run `maturin develop --release` inside the project virtualenv."
+    )
 
 
 def _compute_files_fingerprint(sorted_paths: list[str]) -> list[dict[str, Any]]:
@@ -179,13 +229,18 @@ class ArrowTilesBuilder:
         duckdb_threads = max(1, int(total_threads * 0.6))
         rayon_threads = max(1, total_threads - duckdb_threads)
 
-        os.environ["RAYON_NUM_THREADS"] = str(rayon_threads)
         self.rayon_threads = rayon_threads
         self.show_progress = show_progress
 
-        resolved_temp = Path(temp_dir) if temp_dir is not None else Path("./duckdb_temp")
-        resolved_temp.mkdir(parents=True, exist_ok=True)
-        self.temp_dir = str(resolved_temp.resolve())
+        self._explicit_temp_dir = temp_dir is not None
+        self._owned_temp_dir: tempfile.TemporaryDirectory[str] | None = None
+        if temp_dir is not None:
+            resolved_temp = Path(temp_dir)
+            resolved_temp.mkdir(parents=True, exist_ok=True)
+            self.temp_dir = str(resolved_temp.resolve())
+        else:
+            self._owned_temp_dir = tempfile.TemporaryDirectory(prefix="arrowtiles_")
+            self.temp_dir = str(Path(self._owned_temp_dir.name).resolve())
 
         self.con: duckdb.DuckDBPyConnection | None = duckdb.connect(
             config={
@@ -195,15 +250,31 @@ class ArrowTilesBuilder:
             }
         )
         self.con.execute("PRAGMA max_temp_directory_size='400GB';")
+        for pragma_sql in (
+            "SET TimeZone = 'UTC';",
+            "SET arrow_output_version = '1.0';",
+            "SET produce_arrow_string_view = false;",
+            "SET arrow_output_list_view = false;",
+        ):
+            try:
+                self.con.execute(pragma_sql)
+            except duckdb.Error:
+                pass
         if show_progress:
             self.con.execute("PRAGMA enable_progress_bar;")
             self.con.execute("PRAGMA enable_print_progress_bar;")
 
     def close(self) -> None:
-        """Close the underlying DuckDB connection."""
+        """Close the underlying DuckDB connection and clean up any owned temporary directory."""
         if self.con is not None:
             self.con.close()
             self.con = None
+        if self._owned_temp_dir is not None:
+            try:
+                self._owned_temp_dir.cleanup()
+            except OSError:
+                pass
+            self._owned_temp_dir = None
 
     def __enter__(self) -> ArrowTilesBuilder:
         return self
@@ -274,21 +345,32 @@ class ArrowTilesBuilder:
             f"COUNT(*) FILTER (WHERE {finite_pred} AND {q_id} IS NULL) AS null_ids",
             f"COUNT(*) FILTER (WHERE {finite_pred} AND {q_id} < 0) AS neg_ids",
             f"MAX(CAST({q_id} AS UBIGINT)) FILTER (WHERE {finite_pred} AND {q_id} IS NOT NULL AND {q_id} >= 0) AS max_id",
+            f"COUNT(DISTINCT {q_id}) FILTER (WHERE {finite_pred} AND {q_id} IS NOT NULL) AS distinct_ids",
         ]
         meta_plan: list[tuple[str, str]] = []
 
         if need_stats:
             for col_name, col_type in retained_col_types:
                 qc = f"src.{q(col_name)}"
+                base_type = self._base_duckdb_type(col_type)
                 if col_name in categorical_columns:
                     aggs.append(f"COUNT(*) FILTER (WHERE {finite_pred} AND {qc} IS NULL)")
                     meta_plan.append((col_name, "categorical"))
-                elif self._base_duckdb_type(col_type) in DUCKDB_NUMERIC_TYPES:
+                elif base_type in DUCKDB_NUMERIC_TYPES:
                     aggs.append(
                         f"MIN(CAST({qc} AS DOUBLE)) FILTER (WHERE {finite_pred} AND {qc} IS NOT NULL AND isfinite(CAST({qc} AS DOUBLE)))"
                     )
                     aggs.append(
                         f"MAX(CAST({qc} AS DOUBLE)) FILTER (WHERE {finite_pred} AND {qc} IS NOT NULL AND isfinite(CAST({qc} AS DOUBLE)))"
+                    )
+                    aggs.append(f"COUNT(*) FILTER (WHERE {finite_pred} AND {qc} IS NULL)")
+                    meta_plan.append((col_name, "numeric"))
+                elif base_type in DUCKDB_TEMPORAL_TYPES:
+                    aggs.append(
+                        f"MIN(epoch({qc}) * 1000.0) FILTER (WHERE {finite_pred} AND {qc} IS NOT NULL AND isfinite({qc}))"
+                    )
+                    aggs.append(
+                        f"MAX(epoch({qc}) * 1000.0) FILTER (WHERE {finite_pred} AND {qc} IS NOT NULL AND isfinite({qc}))"
                     )
                     aggs.append(f"COUNT(*) FILTER (WHERE {finite_pred} AND {qc} IS NULL)")
                     meta_plan.append((col_name, "numeric"))
@@ -302,12 +384,17 @@ class ArrowTilesBuilder:
         null_ids = int(row[2] or 0)
         neg_ids = int(row[3] or 0)
         max_id_val = int(row[4] or 0)
+        distinct_ids = int(row[5] or 0)
         if null_ids > 0:
             raise ValueError(f"id_col '{id_col}' contains {null_ids} NULL value(s)")
         if neg_ids > 0:
             raise ValueError(f"id_col '{id_col}' contains {neg_ids} negative value(s)")
         if query_valid_in == 0:
             raise ValueError("Input contains 0 rows with finite (x, y) coordinates")
+        if distinct_ids != query_valid_in:
+            raise ValueError(
+                f"id_col '{id_col}' is not unique ({distinct_ids} distinct values across {query_valid_in} valid rows)"
+            )
         if max_id_val > JS_MAX_SAFE_INTEGER:
             print(
                 f"[ArrowTiles] Warning: id_col '{id_col}' has values > 2^53 - 1 (max={max_id_val}); "
@@ -316,7 +403,7 @@ class ArrowTilesBuilder:
             )
 
         stats: dict[str, dict[str, Any]] = {}
-        idx = 5
+        idx = 6
         for col_name, kind in meta_plan:
             if kind == "categorical":
                 null_count = int(row[idx] or 0)
@@ -370,10 +457,14 @@ class ArrowTilesBuilder:
         _prevalidated_counts: tuple[int, int] | None = None,
         _source_fingerprint: Any = None,
         _pass1_only: bool = False,
+        _priority_column_name: str | None = None,
     ) -> dict[str, Any]:
         """Execute the 2-pass DuckDB + Rust ArrowTiles v0.1 pipeline."""
         if self.con is None:
             raise RuntimeError("ArrowTilesBuilder connection is already closed")
+
+        if resume and not self._explicit_temp_dir:
+            raise ValueError("--resume requires an explicit temp_dir")
 
         if id_col is None or not str(id_col).strip():
             raise ValueError(
@@ -418,7 +509,6 @@ class ArrowTilesBuilder:
             )
 
         core = _load_core_module()
-        core.init_threadpool(self.rayon_threads)
 
         q = self._quote_ident
         desc_rows = self.con.execute(
@@ -445,6 +535,8 @@ class ArrowTilesBuilder:
         internal_xy = {x_col, y_col}
         for col in col_order:
             if col in internal_xy or col == id_col:
+                continue
+            if _priority_column_name is not None and col == sort_col and col == "__at_sort_src":
                 continue
             if col in RESERVED_COLUMN_NAMES or col.startswith("__at_"):
                 raise ValueError(
@@ -497,7 +589,7 @@ class ArrowTilesBuilder:
                 sort_key_expr = q_sort_src
             priority_meta: dict[str, Any] = {
                 "kind": "column",
-                "column": sort_col,
+                "column": str(_priority_column_name) if _priority_column_name is not None else sort_col,
                 "order": sort_dir_clean.lower(),
             }
             order_dir_pass = f"{sort_dir_clean} NULLS LAST"
@@ -509,7 +601,7 @@ class ArrowTilesBuilder:
         source_col_types_for_stats: list[tuple[str, str]] = [
             (col, schema_map[col])
             for col in col_order
-            if col != id_col and col not in internal_xy
+            if col != id_col and col not in internal_xy and not col.startswith("__at_")
         ]
 
         finite_pred = (
@@ -549,14 +641,14 @@ class ArrowTilesBuilder:
                     ):
                         c_min_v = float(computed_stats[cand]["min"])
                         c_max_v = float(computed_stats[cand]["max"])
-                        if abs(c_min_v) <= FLOAT32_SAFE_MAX and abs(c_max_v) <= FLOAT32_SAFE_MAX:
+                        ok_f32, reason = _should_downcast_double(c_min_v, c_max_v)
+                        if ok_f32:
                             downcast_f32_set.add(cand)
                             computed_stats[cand]["min"] = _round_f32(c_min_v)
                             computed_stats[cand]["max"] = _round_f32(c_max_v)
                         else:
                             print(
-                                f"[ArrowTiles] Retaining Float64 for column '{cand}' "
-                                f"(range [{c_min_v:.3g}, {c_max_v:.3g}] exceeds Float32 bounds).",
+                                f"[ArrowTiles] Retaining Float64 for column '{cand}' ({reason}).",
                                 flush=True,
                             )
                     else:
@@ -567,7 +659,7 @@ class ArrowTilesBuilder:
         retained_col_types: list[tuple[str, str]] = []
 
         for join_idx, col in enumerate(col_order):
-            if col == id_col or col in internal_xy:
+            if col == id_col or col in internal_xy or col.startswith("__at_"):
                 continue
             qc = q(col)
             if col in cat_lookup_tables:
@@ -660,10 +752,36 @@ class ArrowTilesBuilder:
                 expected_deepest = os.path.join(
                     temp_partition_dir, f"z_{int(manifest.get('actual_max_z', -1))}.parquet"
                 )
+                manifest_parts = manifest.get("partitions")
+                disk_part_names = {os.path.basename(p) for p in existing_partitions}
+                parts_valid = (
+                    isinstance(manifest_parts, list)
+                    and len(manifest_parts) > 0
+                    and len(manifest_parts) == len(disk_part_names)
+                )
+                if parts_valid:
+                    for pe in manifest_parts:
+                        if not isinstance(pe, dict):
+                            parts_valid = False
+                            break
+                        pf_name = str(pe.get("file", ""))
+                        pf_size = pe.get("size")
+                        pf_path = os.path.join(temp_partition_dir, pf_name)
+                        if (
+                            not pf_name
+                            or pf_name not in disk_part_names
+                            or not isinstance(pf_size, int)
+                            or not os.path.isfile(pf_path)
+                            or os.path.getsize(pf_path) != pf_size
+                        ):
+                            parts_valid = False
+                            break
+
                 if (
                     manifest.get("format") == "arrowtiles-partitions-v2"
                     and manifest.get("fingerprint") == manifest_fingerprint
                     and os.path.isfile(expected_deepest)
+                    and parts_valid
                 ):
                     actual_max_z = int(manifest["actual_max_z"])
                     observed_z20 = int(manifest["observed_z20"])
@@ -705,8 +823,14 @@ class ArrowTilesBuilder:
                     "__at_x_norm",
                     "__at_y_norm",
                     int(z_buffer_limit),
+                    self.rayon_threads,
                 )
+                del reader_pass1
 
+                sorted_parts = sorted(
+                    glob.glob(os.path.join(temp_partition_dir, "z_*.parquet")),
+                    key=_get_z,
+                )
                 manifest_payload = {
                     "format": "arrowtiles-partitions-v2",
                     "fingerprint": manifest_fingerprint,
@@ -720,9 +844,15 @@ class ArrowTilesBuilder:
                     "max_tile_rows": int(configured_max_tile_rows),
                     "sampling": sampling,
                     "grid_size": int(eff_grid_size),
+                    "partitions": [
+                        {"file": os.path.basename(p), "size": int(os.path.getsize(p))}
+                        for p in sorted_parts
+                    ],
                 }
-                with open(manifest_path, "w", encoding="utf-8") as mf:
+                manifest_tmp = f"{manifest_path}.tmp"
+                with open(manifest_tmp, "w", encoding="utf-8") as mf:
                     json.dump(manifest_payload, mf, allow_nan=False, sort_keys=True, indent=2)
+                os.replace(manifest_tmp, manifest_path)
 
             if _pass1_only:
                 for tbl_name, _ in cat_lookup_tables.values():
@@ -742,6 +872,8 @@ class ArrowTilesBuilder:
             # ==========================================
             # PASS 2: DuckDB Hilbert Sort -> Rust Packer
             # ==========================================
+            t_pass2_start = time.time()
+            pass1_seconds = t_pass2_start - t_global
             partitions = sorted(
                 glob.glob(os.path.join(temp_partition_dir, "z_*.parquet")),
                 key=_get_z,
@@ -807,6 +939,7 @@ class ArrowTilesBuilder:
                 int(effective_max_tile_rows),
                 spec_metadata_json,
                 normalized_custom_metadata,
+                self.rayon_threads,
             )
 
             part_iter = (
@@ -826,6 +959,7 @@ class ArrowTilesBuilder:
                 reader_pass2._export_to_c(ptr_pass2)
 
                 packer.process_batch(ptr_pass2)
+                del reader_pass2
 
             (
                 packed_rows,
@@ -833,6 +967,11 @@ class ArrowTilesBuilder:
                 max_compressed_bytes,
                 overview_z0_2_bytes,
             ) = packer.finalize()
+
+            if int(packed_rows) != int(bucketed_rows):
+                raise RuntimeError(
+                    f"Pass 2 row count mismatch: packed {packed_rows} rows != bucketed {bucketed_rows} rows"
+                )
 
             if int(overview_z0_2_bytes) > OVERVIEW_Z0_2_WARN_BYTES:
                 ov_mib = int(overview_z0_2_bytes) / (1024.0 * 1024.0)
@@ -852,6 +991,7 @@ class ArrowTilesBuilder:
             except OSError:
                 pass
 
+            t_done = time.time()
             return {
                 "output_path": output_path_str,
                 "total_rows": int(packed_rows),
@@ -863,7 +1003,9 @@ class ArrowTilesBuilder:
                 "overview_z0_2_bytes": int(overview_z0_2_bytes),
                 "resumed_pass1": resumed_pass1,
                 "fingerprint": manifest_fingerprint,
-                "elapsed_seconds": time.time() - t_global,
+                "pass1_seconds": round(pass1_seconds, 3),
+                "pass2_seconds": round(t_done - t_pass2_start, 3),
+                "elapsed_seconds": t_done - t_global,
             }
         except Exception:
             raise
@@ -949,6 +1091,8 @@ def build_generic(
     """Build a spec-compliant v0.1 .arrowtiles archive from Parquet file(s) or glob."""
     if not (1 <= int(max_categories) <= MAX_CATEGORIES_CAP):
         raise ValueError(f"max_categories must be in 1..{MAX_CATEGORIES_CAP}, got {max_categories}")
+    if resume and temp_dir is None:
+        raise ValueError("--resume requires an explicit temp_dir")
 
     with ArrowTilesBuilder(
         memory_limit=memory_limit,
@@ -1000,9 +1144,7 @@ def build_generic(
             if missing_req:
                 raise ValueError(f"Requested column(s) not found in Parquet schema: {missing_req}")
             explicit_cols_set = set(columns)
-            payload_cols = list(dict.fromkeys(columns))
-            if sort_col is not None and sort_col not in payload_cols and sort_col not in (x_col, y_col, id_col):
-                payload_cols.append(sort_col)
+            payload_cols = [c for c in dict.fromkeys(columns) if c != id_col]
         else:
             payload_cols = [
                 c
@@ -1015,11 +1157,7 @@ def build_generic(
                 if c != id_col and c not in payload_cols:
                     payload_cols.append(c)
         else:
-            payload_cols = [
-                c for c in payload_cols if c not in (x_col, y_col) or c == sort_col
-            ]
-            if sort_col in (x_col, y_col) and sort_col != id_col and sort_col not in payload_cols:
-                payload_cols.append(sort_col)
+            payload_cols = [c for c in payload_cols if c not in (x_col, y_col)]
 
         pre_dropped_columns: list[str] = []
         if columns is None:
@@ -1059,6 +1197,11 @@ def build_generic(
             row_id_expr = f"src.{q(id_col)} AS \"__at_row_id\""
             join_offsets_sql = ""
             read_pq_sql = f"read_parquet({files_sql})"
+            limit_clause = (
+                f'ORDER BY "__at_row_id" ASC LIMIT {int(row_limit)}'
+                if row_limit is not None
+                else ""
+            )
         else:
             row_id_expr = 'CAST(off.base_offset + src.file_row_number AS UBIGINT) AS "__at_row_id"'
             join_offsets_sql = (
@@ -1066,12 +1209,11 @@ def build_generic(
                 "ON replace(src.filename, '\\', '/') = off.file_path"
             )
             read_pq_sql = f"read_parquet({files_sql}, filename=true, file_row_number=true)"
-
-        limit_clause = (
-            f'ORDER BY "__at_row_id" ASC LIMIT {int(row_limit)}'
-            if row_limit is not None
-            else ""
-        )
+            limit_clause = (
+                f"WHERE (off.base_offset + src.file_row_number) < {int(row_limit)}"
+                if row_limit is not None
+                else ""
+            )
         raw_source_sql = f"""
             SELECT {row_id_expr}, {src_proj}
             FROM {read_pq_sql} AS src
@@ -1086,12 +1228,18 @@ def build_generic(
             f"AND isfinite(CAST({q_x} AS DOUBLE)) AND isfinite(CAST({q_y} AS DOUBLE))"
         )
 
-        # Single-pass aggregation over raw_source_sql: counts, id_col uniqueness, bounds, numeric stats, string/explicit-cat distincts
+        # Single-pass aggregation over raw_source_sql: counts, id_col uniqueness, bounds, numeric/temporal stats, string/explicit-cat distincts
         numeric_payload = [
             c
             for c in payload_cols
             if c not in explicit_cat_set
             and ArrowTilesBuilder._base_duckdb_type(col_type_map[c]) in DUCKDB_NUMERIC_TYPES
+        ]
+        temporal_payload = [
+            c
+            for c in payload_cols
+            if c not in explicit_cat_set
+            and ArrowTilesBuilder._base_duckdb_type(col_type_map[c]) in DUCKDB_TEMPORAL_TYPES
         ]
         string_payload = [
             c
@@ -1128,10 +1276,21 @@ def build_generic(
             agg_items.append(
                 f"COUNT(*) FILTER (WHERE {finite_xy} AND {qc} IS NULL)"
             )
+        for col in temporal_payload:
+            qc = q(col)
+            agg_items.append(
+                f"MIN(epoch({qc}) * 1000.0) FILTER (WHERE {finite_xy} AND {qc} IS NOT NULL AND isfinite({qc}))"
+            )
+            agg_items.append(
+                f"MAX(epoch({qc}) * 1000.0) FILTER (WHERE {finite_xy} AND {qc} IS NOT NULL AND isfinite({qc}))"
+            )
+            agg_items.append(
+                f"COUNT(*) FILTER (WHERE {finite_xy} AND {qc} IS NULL)"
+            )
         for col in string_payload:
             qc = q(col)
             agg_items.append(
-                f"COUNT(DISTINCT {qc}) FILTER (WHERE {finite_xy} AND {qc} IS NOT NULL)"
+                f"COUNT(DISTINCT CAST({qc} AS VARCHAR)) FILTER (WHERE {finite_xy} AND {qc} IS NOT NULL)"
             )
             agg_items.append(
                 f"COUNT(*) FILTER (WHERE {finite_xy} AND {qc} IS NULL)"
@@ -1200,10 +1359,10 @@ def build_generic(
                 and not (keep_source_xy and col in (x_col, y_col))
             )
             if can_downcast:
-                if (
-                    (not has_min or abs(min_f) <= FLOAT32_SAFE_MAX)
-                    and (not has_max or abs(max_f) <= FLOAT32_SAFE_MAX)
-                ):
+                ok_f32, reason = _should_downcast_double(
+                    min_f, max_f, has_min=has_min, has_max=has_max
+                )
+                if ok_f32:
                     downcast_float32_cols.add(col)
                     if has_min:
                         min_f = _round_f32(min_f)
@@ -1211,11 +1370,24 @@ def build_generic(
                         max_f = _round_f32(max_f)
                 else:
                     print(
-                        f"[ArrowTiles] Retaining Float64 for column '{col}' "
-                        f"(range [{min_f:.3g}, {max_f:.3g}] exceeds Float32 bounds).",
+                        f"[ArrowTiles] Retaining Float64 for column '{col}' ({reason}).",
                         flush=True,
                     )
 
+            stats_dict[col] = {
+                "type": "numeric",
+                "min": 0.0 if min_f == 0.0 else min_f,
+                "max": 0.0 if max_f == 0.0 else max_f,
+                "null_count": int(rnull or 0),
+            }
+
+        for col in temporal_payload:
+            rmin, rmax, rnull = agg_row[cursor], agg_row[cursor + 1], agg_row[cursor + 2]
+            cursor += 3
+            has_min = rmin is not None and math.isfinite(float(rmin))
+            has_max = rmax is not None and math.isfinite(float(rmax))
+            min_f = float(rmin) if has_min else 0.0
+            max_f = float(rmax) if has_max else 0.0
             stats_dict[col] = {
                 "type": "numeric",
                 "min": 0.0 if min_f == 0.0 else min_f,
@@ -1233,10 +1405,11 @@ def build_generic(
                 qc = q(col)
                 dist_rows = con.execute(
                     f"""
-                    SELECT DISTINCT {qc}
+                    SELECT CAST({qc} AS VARCHAR) AS lbl
                     FROM ({raw_source_sql}) AS raw_src
                     WHERE {finite_xy} AND {qc} IS NOT NULL
-                    ORDER BY {qc} ASC
+                    GROUP BY lbl
+                    ORDER BY MIN({qc}) ASC, lbl ASC
                     """
                 ).fetchall()
                 vals = [str(v[0]) for v in dist_rows]
@@ -1250,7 +1423,7 @@ def build_generic(
                 # D7a: drop unrequested high-cardinality free-text columns by default unless named in columns=
                 explicitly_requested = (
                     explicit_cols_set is not None and col in explicit_cols_set
-                ) or (col == sort_col)
+                )
                 if not explicitly_requested:
                     payload_cols = [c for c in payload_cols if c != col]
                     dropped_columns.append(col)
@@ -1267,7 +1440,11 @@ def build_generic(
             else (
                 numeric_payload[0]
                 if numeric_payload
-                else (payload_cols[0] if payload_cols else "x_u16")
+                else (
+                    temporal_payload[0]
+                    if temporal_payload
+                    else (payload_cols[0] if payload_cols else "x_u16")
+                )
             )
         )
         field_stats = stats_dict.get(default_visual_field, {})
@@ -1310,6 +1487,16 @@ def build_generic(
             extra_custom_json = json.dumps(parsed_cfg, allow_nan=False, sort_keys=True)
 
         retained_selects = ['"__at_row_id" AS "row_id"', *(q(col) for col in payload_cols)]
+        eff_sort_col: str | None = sort_col
+        priority_col_override: str | None = None
+        if sort_col is not None and sort_col not in payload_cols:
+            if id_col is not None and sort_col == id_col:
+                eff_sort_col = "row_id"
+                priority_col_override = sort_col
+            else:
+                retained_selects.append(f'{q(sort_col)} AS "__at_sort_src"')
+                eff_sort_col = "__at_sort_src"
+                priority_col_override = sort_col
 
         generic_query = f"""
             SELECT
@@ -1323,7 +1510,7 @@ def build_generic(
         return builder.build(
             input_query=generic_query,
             output_path=output_path,
-            sort_col=sort_col,
+            sort_col=eff_sort_col,
             x_col="__at_in_x",
             y_col="__at_in_y",
             sort_dir=sort_dir,
@@ -1347,6 +1534,7 @@ def build_generic(
             _prevalidated_counts=(valid_rows, dropped_rows),
             _source_fingerprint=source_fp,
             _pass1_only=_pass1_only,
+            _priority_column_name=priority_col_override,
         )
 
 
@@ -1369,6 +1557,8 @@ def build_gaia(
     _pass1_only: bool = False,
 ) -> dict[str, Any]:
     """Build a spec-compliant v0.1 Gaia Hammer-projection .arrowtiles archive (`phot_g_mean_mag ASC`)."""
+    if resume and temp_dir is None:
+        raise ValueError("--resume requires an explicit temp_dir")
     hammer_half_w = 2.0 * math.sqrt(2.0)  # 2.8284271247461903
     hammer_half_h = math.sqrt(2.0)  # 1.4142135623730951
 
@@ -1429,7 +1619,7 @@ def build_gaia(
             )
 
         limit_clause = (
-            f'ORDER BY "row_id" ASC LIMIT {int(row_limit)}'
+            f"WHERE (off.base_offset + src.file_row_number) < {int(row_limit)}"
             if row_limit is not None
             else ""
         )

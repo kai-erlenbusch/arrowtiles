@@ -31,4 +31,6 @@ def test_read_gaia_pmtiles_metadata_and_schema(gaia_arrowtiles_path: Path) -> No
         assert "arrow_schema" in metadata
         schema_bytes = base64.b64decode(metadata["arrow_schema"])
         schema = ipc.RecordBatchStreamReader(schema_bytes).schema
-        assert {"x_u16", "y_u16", "abs_m", "bp_rp"}.issubset(set(schema.names))
+        names = set(schema.names)
+        assert {"x_u16", "y_u16", "bp_rp"}.issubset(names)
+        assert "phot_g_mean_mag" in names or "abs_m" in names
